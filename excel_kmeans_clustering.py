@@ -289,8 +289,41 @@ def run_pipeline(
     cluster_to_cat = vote_cluster_category(labels, df["rule_category"].tolist(), rule_order)
     df["cluster_category"] = [cluster_to_cat[int(x)] for x in labels]
 
-    # 最终类别: 默认采用规则向量分类；若相似度极低，用簇类别兜底
-    df["category"] = np.where(df["rule_score"] >= 0.05, df["rule_category"], df["cluster_category"])
+    # 统计每个簇的多数票占比，用于判断簇类别是否可靠
+    cluster_majority_ratio: Dict[int, float] = {}
+    for cluster_id in np.unique(labels):
+        idxs = np.where(labels == cluster_id)[0]
+        votes: Dict[str, int] = {}
+        for i in idxs:
+            c = df["rule_category"].iat[i]
+            votes[c] = votes.get(c, 0) + 1
+        max_vote = max(votes.values()) if votes else 0
+        ratio = max_vote / len(idxs) if len(idxs) > 0 else 0.0
+        cluster_majority_ratio[int(cluster_id)] = ratio
+
+    # 最终类别策略:
+    # 1) 规则分数高 -> 直接用规则类别
+    # 2) 规则分数低 -> 仅在“非单点簇且簇投票稳定”时使用簇类别，否则拒识
+    final_categories: List[str] = []
+    rule_score_threshold = 0.05
+    min_cluster_size_for_fallback = 2
+    min_majority_ratio_for_fallback = 0.6
+
+    for i, cluster_id in enumerate(labels):
+        rs = float(df["rule_score"].iat[i])
+        if rs >= rule_score_threshold:
+            final_categories.append(df["rule_category"].iat[i])
+            continue
+
+        idxs = np.where(labels == cluster_id)[0]
+        c_size = len(idxs)
+        c_ratio = cluster_majority_ratio.get(int(cluster_id), 0.0)
+        if c_size >= min_cluster_size_for_fallback and c_ratio >= min_majority_ratio_for_fallback:
+            final_categories.append(df["cluster_category"].iat[i])
+        else:
+            final_categories.append("拒识")
+
+    df["category"] = final_categories
 
     # 按 query 去重，冲突时保留“类别最接近”样本
     result = select_best_duplicate_rows(df, vectors_norm, df["category"].tolist())
