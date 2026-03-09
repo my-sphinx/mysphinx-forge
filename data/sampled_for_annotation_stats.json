@@ -1,0 +1,52 @@
+{
+  "pipeline_stats": {
+    "domain": "securities",
+    "total_input": 5,
+    "after_cleaning": 5,
+    "after_dedup": 5,
+    "after_clustering_sample": 5,
+    "final_output": 3,
+    "retention_rate": 0.6
+  },
+  "clustering_stats": {
+    "n_clusters": 2,
+    "n_active_clusters": 2,
+    "n_covered_clusters_initial": 2,
+    "n_covered_clusters_final": 2,
+    "coverage_rate_initial": 1.0,
+    "coverage_rate_final": 1.0
+  },
+  "quality_stats": {
+    "score_min": 0.36,
+    "score_max": 0.7335714285714285,
+    "score_mean": 0.5599783549783549,
+    "score_std": 0.1536468686448677,
+    "score_median": 0.5863636363636364,
+    "score_q25": 0.4731818181818182,
+    "score_q75": 0.6599675324675325
+  },
+  "diversity_stats": {
+    "cluster_distribution": {
+      "0": 1,
+      "1": 2
+    },
+    "samples_per_cluster_min": 1,
+    "samples_per_cluster_max": 2,
+    "samples_per_cluster_mean": 1.5,
+    "samples_per_cluster_std": 0.5,
+    "shannon_entropy": 0.6365141680948128,
+    "normalized_entropy": 0.9182958337659505,
+    "entropy_interpretation": "接近1表示分布均匀，接近0表示分布集中"
+  },
+  "recommendations": [
+    "✓ 簇覆盖率优秀(100.0%)，数据多样性良好。",
+    "✓ 数据分布均匀(熵=0.92)，多样性优秀。",
+    "⚠️ 数据量较少(3条)，对于1.7B-8B模型可能不足。建议增加到15000-20000条以达到98% F1目标。",
+    "🎉 数据质量与多样性均达标，可以开始标注和训练！",
+    "💡 达到98% F1的关键因素：",
+    "  1. 确保每个意图类别至少有50-100条标注样本",
+    "  2. 对边界case进行重点标注（模糊、歧义样本）",
+    "  3. 使用主动学习：先训练，找出低置信度样本，补充标注",
+    "  4. 考虑数据增强：同义替换、回译等"
+  ]
+}

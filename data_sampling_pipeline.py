@@ -26,6 +26,23 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 
+# 默认领域关键词配置
+DEFAULT_DOMAIN_KEYWORDS = {
+    "insurance": [
+        "寿险", "终身寿险", "定期寿险", "保险", "保障",
+        "理赔", "受益人", "保额", "保费", "投保",
+        "保单", "身故", "全残", "责任", "现金价值"
+    ],
+    "securities": [
+        "证券", "股票", "A股", "港股", "美股",
+        "基金", "债券", "可转债", "期货", "期权",
+        "ETF", "指数", "开户", "交易", "委托",
+        "买入", "卖出", "持仓", "K线", "涨停",
+        "跌停", "市盈率", "PE", "PB", "ROE",
+        "分红", "研报", "公告", "停牌", "复牌"
+    ]
+}
+
 # ===============================================
 # 第1步: 数据清洗模块
 # ===============================================
@@ -201,7 +218,7 @@ class TextEmbedder:
             convert_to_numpy=True,
             normalize_embeddings=True  # 归一化，便于计算相似度
         )
-        
+
         return embeddings
 
 
@@ -640,21 +657,23 @@ class QualityScorer:
     4. 可标注性 - 是否适合人工标注
     """
     
-    def __init__(self, domain_keywords: List[str] = None):
+    def __init__(
+        self,
+        domain: str = "insurance",
+        domain_keywords: List[str] = None
+    ):
         """
         初始化质量评分器
         
         参数:
-        - domain_keywords: 领域关键词列表（寿险相关）
+        - domain: 领域名称（insurance / securities / custom）
+        - domain_keywords: 领域关键词列表（可选，优先级高于domain默认值）
         """
+        self.domain = domain
+
         if domain_keywords is None:
-            # 寿险领域关键词
-            domain_keywords = [
-                '寿险', '终身寿险', '定期寿险', '保险', '保障',
-                '理赔', '受益人', '保额', '保费', '投保',
-                '保单', '身故', '全残', '责任', '现金价值'
-            ]
-        
+            domain_keywords = DEFAULT_DOMAIN_KEYWORDS.get(domain, [])
+
         self.domain_keywords = domain_keywords
     
     def score_information_density(self, text: str) -> float:
@@ -780,7 +799,9 @@ class SamplingPipeline:
         output_file: str = "data/sampled_for_annotation.csv",
         n_target_samples: int = 10000,
         n_clusters: int = 200,
-        embedding_model: str = "moka-ai/m3e-base"
+        embedding_model: str = "moka-ai/m3e-base",
+        domain: str = "insurance",
+        domain_keywords_file: str = None
     ):
         """
         初始化Pipeline
@@ -791,19 +812,64 @@ class SamplingPipeline:
         - n_target_samples: 目标采样数量
         - n_clusters: 聚类数量
         - embedding_model: 嵌入模型名称
+        - domain: 业务领域（insurance / securities / custom）
+        - domain_keywords_file: 自定义领域关键词文件（json/txt）
         """
         self.input_file = input_file
         self.output_file = output_file
         self.n_target_samples = n_target_samples
         self.n_clusters = n_clusters
         self.embedding_model = embedding_model
+        self.domain = domain
+        self.domain_keywords_file = domain_keywords_file
         
         # 初始化各模块
         self.cleaner = DataCleaner()
         self.embedder = None  # 延迟加载
         self.vector_db = None  # 延迟加载
         self.sampler = None  # 延迟加载
-        self.scorer = QualityScorer()
+        domain_keywords = self._load_domain_keywords()
+        self.scorer = QualityScorer(
+            domain=self.domain,
+            domain_keywords=domain_keywords
+        )
+
+    def _load_domain_keywords(self) -> List[str]:
+        """
+        加载领域关键词
+
+        优先级:
+        1. domain_keywords_file（若提供）
+        2. 内置默认关键词（insurance/securities）
+        3. 空列表（custom且未提供文件）
+        """
+        if self.domain_keywords_file:
+            keywords_path = Path(self.domain_keywords_file)
+            if not keywords_path.exists():
+                raise FileNotFoundError(f"关键词文件不存在: {self.domain_keywords_file}")
+
+            # JSON格式: ["词1", "词2"] 或 {"keywords": [...]}
+            if keywords_path.suffix.lower() == ".json":
+                with open(keywords_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    keywords = data.get("keywords", [])
+                elif isinstance(data, list):
+                    keywords = data
+                else:
+                    raise ValueError("JSON关键词文件格式错误，应为list或包含keywords字段的dict")
+            else:
+                # TXT格式: 每行一个关键词
+                with open(keywords_path, "r", encoding="utf-8") as f:
+                    keywords = [line.strip() for line in f if line.strip()]
+
+            keywords = [str(k).strip() for k in keywords if str(k).strip()]
+            print(f"✓ 从文件加载关键词: {len(keywords)} 个 ({self.domain_keywords_file})")
+            return keywords
+
+        keywords = DEFAULT_DOMAIN_KEYWORDS.get(self.domain, [])
+        print(f"✓ 使用内置领域关键词: domain={self.domain}, count={len(keywords)}")
+        return keywords
     
     def load_data(self) -> pd.DataFrame:
         """
@@ -876,6 +942,14 @@ class SamplingPipeline:
             df = pd.read_json(self.input_file, lines=True)
         elif self.input_file.endswith('.parquet'):
             df = pd.read_parquet(self.input_file)
+        elif self.input_file.endswith(('.xlsx', '.xls', '.xlsm')):
+            # Excel支持：默认读取第一个sheet
+            try:
+                df = pd.read_excel(self.input_file, engine='openpyxl')
+            except Exception as e:
+                print(f"⚠️ 使用openpyxl读取失败: {str(e)[:100]}")
+                print("尝试自动引擎...")
+                df = pd.read_excel(self.input_file)
         else:
             raise ValueError(f"不支持的文件格式: {self.input_file}")
         
@@ -960,6 +1034,7 @@ class SamplingPipeline:
         print("=" * 70)
         print("数据采样Pipeline启动")
         print(f"输入: {self.input_file}")
+        print(f"领域: {self.domain}")
         print(f"目标: 从400万条中筛选 {self.n_target_samples} 条")
         print("=" * 70)
         
@@ -968,7 +1043,7 @@ class SamplingPipeline:
         
         # 假设文本列名为'text'或'query'或'question'
         text_column = None
-        for col in ['text', 'query', 'question', 'content', 'message']:
+        for col in ['text', 'query', 'question', 'content', 'message', 'field_text', '客户问题']:
             if col in df.columns:
                 text_column = col
                 break
@@ -1178,6 +1253,7 @@ class SamplingPipeline:
         
         output_df = pd.DataFrame({
             'text': final_texts,
+            'domain': self.domain,
             'frequency': final_frequencies,  # 新增：保留频率信息
             'quality_score': final_scores,
             'cluster_id': final_labels,
@@ -1210,6 +1286,7 @@ class SamplingPipeline:
         stats = {
             # 数据流统计
             'pipeline_stats': {
+                'domain': self.domain,
                 'total_input': len(texts),
                 'after_cleaning': len(cleaned_texts),
                 'after_dedup': len(cleaned_texts),
@@ -1429,7 +1506,7 @@ if __name__ == "__main__":
         "--input",
         type=str,
         required=True,
-        help="输入文件路径（400万条log数据，支持CSV/JSON/Parquet）"
+        help="输入文件路径（400万条log数据，支持CSV/JSON/Parquet/Excel）"
     )
     parser.add_argument(
         "--output",
@@ -1466,6 +1543,21 @@ if __name__ == "__main__":
         choices=["balanced", "proportional", "hybrid"],
         help="采样策略: balanced(均衡), proportional(按比例), hybrid(混合) (默认: hybrid)"
     )
+
+    # 业务领域参数
+    parser.add_argument(
+        "--domain",
+        type=str,
+        default="insurance",
+        choices=["insurance", "securities", "custom"],
+        help="业务领域: insurance(寿险), securities(证券), custom(自定义关键词) (默认: insurance)"
+    )
+    parser.add_argument(
+        "--domain_keywords_file",
+        type=str,
+        default=None,
+        help="自定义关键词文件路径（json/txt）。提供后将覆盖内置领域关键词。"
+    )
     
     # 模型参数
     parser.add_argument(
@@ -1490,6 +1582,8 @@ if __name__ == "__main__":
 {'='*70}
 输入文件: {args.input}
 输出文件: {args.output}
+业务领域: {args.domain}
+关键词文件: {args.domain_keywords_file or '未提供(使用内置关键词)'}
 目标样本数: {args.n_samples}
 聚类数量: {args.n_clusters}
 每簇最少: {args.min_per_cluster}
@@ -1504,8 +1598,9 @@ if __name__ == "__main__":
         output_file=args.output,
         n_target_samples=args.n_samples,
         n_clusters=args.n_clusters,
-        embedding_model=args.embedding_model
+        embedding_model=args.embedding_model,
+        domain=args.domain,
+        domain_keywords_file=args.domain_keywords_file
     )
     
     pipeline.run()
-

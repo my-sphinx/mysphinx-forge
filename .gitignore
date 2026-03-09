@@ -6,3 +6,5 @@ __pycache__
 .idea
 .ipynb_checkpoints
 .pytest_cache
+
+data
