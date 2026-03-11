@@ -36,6 +36,40 @@ def test_main_supports_action_flag(tmp_path, monkeypatch, capsys) -> None:
     assert (tmp_path / "input_cleaned.csv").exists()
 
 
+def test_main_supports_target_column(tmp_path, monkeypatch, capsys) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame(
+        {
+            "text": ["!!!", "正常内容"],
+            "客户问题": ["正常问题", "???"],
+        }
+    ).to_csv(input_file, index=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "clean",
+            "--input-file",
+            str(input_file),
+            "--target-column",
+            "客户问题",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    output_file = tmp_path / "input_cleaned.csv"
+
+    assert exit_code == 0
+    assert "清洗完成" in captured.out
+    cleaned = pd.read_csv(output_file)
+    assert cleaned["text"].tolist() == ["!!!"]
+    assert cleaned["客户问题"].tolist() == ["正常问题"]
+
+
 def test_main_streams_csv_cleaning(tmp_path, monkeypatch, capsys) -> None:
     input_file = tmp_path / "input.csv"
     pd.DataFrame({"text": ["正常内容", "!!!", "abc123"]}).to_csv(input_file, index=False)
@@ -134,6 +168,31 @@ def test_main_rejects_invalid_chunk_size(monkeypatch, capsys) -> None:
 
     assert exit_code == 1
     assert "--chunk-size 必须是大于 0 的整数。" in captured.out
+
+
+def test_main_rejects_missing_target_column(tmp_path, monkeypatch, capsys) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame({"text": ["正常内容"]}).to_csv(input_file, index=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "clean",
+            "--input-file",
+            str(input_file),
+            "--target-column",
+            "客户问题",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "未找到目标列：客户问题" in captured.out
 
 
 def test_main_shows_multistage_progress_for_excel(tmp_path, monkeypatch, capsys) -> None:

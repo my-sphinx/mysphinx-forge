@@ -41,3 +41,27 @@ def test_clean_dataframe_reports_progress() -> None:
     clean_dataframe(dataframe, progress_callback=reported.append, report_every=2)
 
     assert reported == [2, 1]
+
+
+def test_clean_dataframe_uses_target_column_only() -> None:
+    dataframe = pd.DataFrame(
+        {
+            "text": ["正常内容", "!!!"],
+            "客户问题": ["???", "正常问题"],
+        }
+    )
+
+    cleaned, stats = clean_dataframe(dataframe, target_column="客户问题")
+
+    assert cleaned["text"].tolist() == ["!!!"]
+    assert cleaned["客户问题"].tolist() == ["正常问题"]
+    assert stats.total_before == 2
+    assert stats.total_after == 1
+    assert stats.removed_symbol_rows == 1
+
+
+def test_clean_dataframe_rejects_missing_target_column() -> None:
+    dataframe = pd.DataFrame({"text": ["正常内容"]})
+
+    with pytest.raises(ValueError, match="未找到目标列：客户问题"):
+        clean_dataframe(dataframe, target_column="客户问题")

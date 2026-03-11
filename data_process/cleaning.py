@@ -89,16 +89,20 @@ def count_csv_rows(file_path: str | Path) -> int:
 
 def clean_dataframe(
     dataframe: pd.DataFrame,
+    target_column: str = "text",
     progress_callback: Callable[[int], None] | None = None,
     report_every: int = 1_000,
 ) -> tuple[pd.DataFrame, CleaningStats]:
+    if target_column not in dataframe.columns:
+        raise ValueError(f"未找到目标列：{target_column}")
+
     stats = CleaningStats(total_before=len(dataframe), total_after=0)
     keep_mask: list[bool] = []
     processed_since_report = 0
 
-    for _, row in dataframe.iterrows():
+    for value in dataframe[target_column].tolist():
         processed_since_report += 1
-        row_text = _row_to_text(row)
+        row_text = _cell_to_text(value)
         if _is_blank_text(row_text):
             stats.removed_blank_rows += 1
             keep_mask.append(False)
@@ -126,15 +130,10 @@ def clean_dataframe(
     return cleaned, stats
 
 
-def _row_to_text(row: pd.Series) -> str:
-    parts: list[str] = []
-    for value in row.tolist():
-        if pd.isna(value):
-            continue
-        text = str(value).strip()
-        if text:
-            parts.append(text)
-    return " ".join(parts)
+def _cell_to_text(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
 
 
 def _is_blank_text(text: str) -> bool:

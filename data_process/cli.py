@@ -40,6 +40,11 @@ def main() -> int:
         default=50_000,
         help="csv 分块流式清洗时每块读取的行数。仅对 csv 生效，默认 50000。",
     )
+    parser.add_argument(
+        "--target-column",
+        default="text",
+        help="指定执行清洗判断的目标列名，默认 text。",
+    )
 
     args = parser.parse_args()
     if not args.input_file:
@@ -50,19 +55,24 @@ def main() -> int:
         return 1
 
     if args.action == "clean":
-        return _run_clean(args.input_file, args.output, args.chunk_size)
+        return _run_clean(args.input_file, args.output, args.chunk_size, args.target_column)
 
     parser.print_help()
     return 1
 
 
-def _run_clean(input_file: str, output_arg: str | None, chunk_size: int) -> int:
+def _run_clean(
+    input_file: str,
+    output_arg: str | None,
+    chunk_size: int,
+    target_column: str,
+) -> int:
     input_path = Path(input_file)
     output_path = _resolve_output_path(input_path, output_arg)
 
     if input_path.suffix.lower() == ".csv":
         try:
-            stats = _run_clean_csv_stream(input_path, output_path, chunk_size)
+            stats = _run_clean_csv_stream(input_path, output_path, chunk_size, target_column)
         except ValueError as exc:
             print(str(exc))
             return 1
@@ -78,7 +88,11 @@ def _run_clean(input_file: str, output_arg: str | None, chunk_size: int) -> int:
 
     progress_bar = ProgressBar(total=len(dataframe), description="清洗数据")
     try:
-        cleaned, stats = clean_dataframe(dataframe, progress_callback=progress_bar.advance)
+        cleaned, stats = clean_dataframe(
+            dataframe,
+            target_column=target_column,
+            progress_callback=progress_bar.advance,
+        )
         progress_bar.set_summary(
             total_before=stats.total_before,
             total_removed=stats.total_removed,
@@ -97,7 +111,12 @@ def _run_clean(input_file: str, output_arg: str | None, chunk_size: int) -> int:
     return 0
 
 
-def _run_clean_csv_stream(input_path: Path, output_path: Path, chunk_size: int) -> CleaningStats:
+def _run_clean_csv_stream(
+    input_path: Path,
+    output_path: Path,
+    chunk_size: int,
+    target_column: str,
+) -> CleaningStats:
     total_stats = CleaningStats(total_before=0, total_after=0)
     run_stage("统计总行数")
     total_rows = count_csv_rows(input_path)
@@ -131,6 +150,7 @@ def _run_clean_csv_stream(input_path: Path, output_path: Path, chunk_size: int) 
         for chunk in iter_dataframes(input_path, chunksize=chunk_size):
             cleaned_chunk, chunk_stats = clean_dataframe(
                 chunk,
+                target_column=target_column,
                 progress_callback=progress_bar.advance,
             )
             total_stats.merge(chunk_stats)
