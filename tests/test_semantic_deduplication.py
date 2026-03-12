@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import math
+import sys
+import types
 
 import pandas as pd
 
 from data_process.semantic_deduplication import (
     SemanticDeduplicator,
+    _load_embedding_model,
     semantic_deduplicate_dataframe,
 )
 
@@ -160,6 +163,57 @@ def test_semantic_deduplicate_dataframe_uses_target_column() -> None:
 
     assert deduplicated["text"].tolist() == ["row1"]
     assert stats.target_column == "客户问题"
+
+
+def test_load_embedding_model_suppresses_known_benign_load_report(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    model_dir = tmp_path / "m3e-base"
+    model_dir.mkdir()
+
+    class FakeSentenceTransformer:
+        def __init__(self, _model_path: str, **_kwargs) -> None:
+            print("BertModel LOAD REPORT from: models/m3e-base")
+            print("embeddings.position_ids | UNEXPECTED |")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
+    )
+
+    model = _load_embedding_model(model_dir)
+
+    captured = capsys.readouterr()
+    assert isinstance(model, FakeSentenceTransformer)
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_load_embedding_model_replays_non_benign_output(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    model_dir = tmp_path / "m3e-base"
+    model_dir.mkdir()
+
+    class FakeSentenceTransformer:
+        def __init__(self, _model_path: str, **_kwargs) -> None:
+            print("loading custom backend")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
+    )
+
+    _load_embedding_model(model_dir)
+
+    captured = capsys.readouterr()
+    assert "loading custom backend" in captured.out
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

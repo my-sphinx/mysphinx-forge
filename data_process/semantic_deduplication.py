@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import io
+import os
+import sys
+import tempfile
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -11,6 +16,11 @@ from data_process.deduplication import DeduplicationStats, normalize_dedup_text
 
 
 DEFAULT_EMBEDDING_MODEL_PATH = Path("models/m3e-base")
+_BENIGN_MODEL_LOAD_OUTPUT_MARKERS = (
+    "BertModel LOAD REPORT",
+    "embeddings.position_ids",
+    "UNEXPECTED",
+)
 
 
 @dataclass(slots=True)
@@ -219,7 +229,90 @@ def _load_embedding_model(model_path: Path):
             "未安装 sentence-transformers，请先执行 uv sync。"
         ) from exc
 
-    return SentenceTransformer(str(model_path))
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+
+    try:
+        with (
+            _capture_process_output() as process_output,
+            redirect_stdout(stdout_buffer),
+            redirect_stderr(stderr_buffer),
+        ):
+            model = SentenceTransformer(str(model_path), local_files_only=True)
+    except Exception:
+        _replay_model_load_output(
+            stdout_text=stdout_buffer.getvalue(),
+            stderr_text=stderr_buffer.getvalue(),
+            process_text=process_output.read(),
+        )
+        raise
+
+    _replay_model_load_output(
+        stdout_text=stdout_buffer.getvalue(),
+        stderr_text=stderr_buffer.getvalue(),
+        process_text=process_output.read(),
+    )
+    return model
+
+
+def _replay_model_load_output(stdout_text: str, stderr_text: str, process_text: str) -> None:
+    captured_output = "\n".join(
+        text.strip()
+        for text in (stdout_text, stderr_text, process_text)
+        if text.strip()
+    )
+    if captured_output and _is_benign_model_load_output(captured_output):
+        return
+
+    if stdout_text:
+        sys.stdout.write(stdout_text)
+    if stderr_text:
+        sys.stderr.write(stderr_text)
+    if process_text:
+        os.write(sys.__stdout__.fileno(), process_text.encode())
+
+
+def _is_benign_model_load_output(output: str) -> bool:
+    return all(marker in output for marker in _BENIGN_MODEL_LOAD_OUTPUT_MARKERS)
+
+
+class _CapturedProcessOutput:
+    def __init__(self, stdout_file, stderr_file) -> None:
+        self._stdout_file = stdout_file
+        self._stderr_file = stderr_file
+
+    def read(self) -> str:
+        parts: list[str] = []
+        for file_obj in (self._stdout_file, self._stderr_file):
+            file_obj.flush()
+            file_obj.seek(0)
+            content = file_obj.read().decode()
+            if content:
+                parts.append(content)
+        return "".join(parts)
+
+
+class _capture_process_output:
+    def __enter__(self) -> _CapturedProcessOutput:
+        self._stdout_file = tempfile.TemporaryFile(mode="w+b")
+        self._stderr_file = tempfile.TemporaryFile(mode="w+b")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        self._stdout_fd = os.dup(sys.__stdout__.fileno())
+        self._stderr_fd = os.dup(sys.__stderr__.fileno())
+        os.dup2(self._stdout_file.fileno(), sys.__stdout__.fileno())
+        os.dup2(self._stderr_file.fileno(), sys.__stderr__.fileno())
+        return _CapturedProcessOutput(self._stdout_file, self._stderr_file)
+
+    def __exit__(self, exc_type, exc, exc_tb) -> None:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(self._stdout_fd, sys.__stdout__.fileno())
+        os.dup2(self._stderr_fd, sys.__stderr__.fileno())
+        os.close(self._stdout_fd)
+        os.close(self._stderr_fd)
+        self._stdout_file.flush()
+        self._stderr_file.flush()
 
 
 def _create_faiss_index(dimension: int):
