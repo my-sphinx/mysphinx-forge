@@ -11,6 +11,7 @@ import pandas as pd
 
 
 SUPPORTED_EXTENSIONS = {".csv", ".xls", ".xlsx", ".xlsm"}
+DEFAULT_TARGET_COLUMNS = ("text", "用户问题", "客户问题", "用户输入")
 MOJIBAKE_CHARS = set("ÃÂÐÑØÞßæøåçðþŒœ€™¢£¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿")
 REPLACEMENT_CHARS = {"�", "\ufffd"}
 EMOJI_RANGES = (
@@ -93,14 +94,13 @@ def clean_dataframe(
     progress_callback: Callable[[int], None] | None = None,
     report_every: int = 1_000,
 ) -> tuple[pd.DataFrame, CleaningStats]:
-    if target_column not in dataframe.columns:
-        raise ValueError(f"未找到目标列：{target_column}")
+    resolved_target_column = resolve_target_column(dataframe, target_column)
 
     stats = CleaningStats(total_before=len(dataframe), total_after=0)
     keep_mask: list[bool] = []
     processed_since_report = 0
 
-    for value in dataframe[target_column].tolist():
+    for value in dataframe[resolved_target_column].tolist():
         processed_since_report += 1
         row_text = _cell_to_text(value)
         if _is_blank_text(row_text):
@@ -128,6 +128,18 @@ def clean_dataframe(
     cleaned = dataframe.loc[keep_mask].reset_index(drop=True)
     stats.total_after = len(cleaned)
     return cleaned, stats
+
+
+def resolve_target_column(dataframe: pd.DataFrame, target_column: str) -> str:
+    if target_column in dataframe.columns:
+        return target_column
+
+    if target_column == "text":
+        for candidate in DEFAULT_TARGET_COLUMNS:
+            if candidate in dataframe.columns:
+                return candidate
+
+    raise ValueError(f"未找到目标列：{target_column}")
 
 
 def _cell_to_text(value: object) -> str:

@@ -70,6 +70,32 @@ def test_main_supports_target_column(tmp_path, monkeypatch, capsys) -> None:
     assert cleaned["客户问题"].tolist() == ["正常问题"]
 
 
+def test_main_auto_detects_user_input_column(tmp_path, monkeypatch, capsys) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame(
+        {
+            "用户输入": ["正常内容", "!!!"],
+            "其他列": ["x", "y"],
+        }
+    ).to_csv(input_file, index=False)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--action", "clean", "--input-file", str(input_file)],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    output_file = tmp_path / "input_cleaned.csv"
+
+    assert exit_code == 0
+    assert "清洗完成" in captured.out
+    cleaned = pd.read_csv(output_file)
+    assert cleaned["用户输入"].tolist() == ["正常内容"]
+    assert cleaned["其他列"].tolist() == ["x"]
+
+
 def test_main_streams_csv_cleaning(tmp_path, monkeypatch, capsys) -> None:
     input_file = tmp_path / "input.csv"
     pd.DataFrame({"text": ["正常内容", "!!!", "abc123"]}).to_csv(input_file, index=False)

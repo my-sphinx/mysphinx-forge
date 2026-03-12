@@ -60,6 +60,22 @@ def test_clean_dataframe_uses_target_column_only() -> None:
     assert stats.removed_symbol_rows == 1
 
 
+def test_clean_dataframe_auto_detects_user_input_column() -> None:
+    dataframe = pd.DataFrame(
+        {
+            "用户输入": ["正常问题", "!!!"],
+            "其他列": ["a", "b"],
+        }
+    )
+
+    cleaned, stats = clean_dataframe(dataframe)
+
+    assert cleaned["用户输入"].tolist() == ["正常问题"]
+    assert stats.total_before == 2
+    assert stats.total_after == 1
+    assert stats.removed_symbol_rows == 1
+
+
 def test_clean_dataframe_rejects_missing_target_column() -> None:
     dataframe = pd.DataFrame({"text": ["正常内容"]})
 
