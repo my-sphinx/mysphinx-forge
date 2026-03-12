@@ -86,6 +86,8 @@ class SemanticDeduplicator:
             global_row_index = row_index_offset + row_index
 
             if normalized_text == "":
+                # Blank values do not need embeddings, but they still need to preserve
+                # row order so the keep mask lines up with the original dataframe.
                 self._flush_pending_rows(
                     pending_rows=pending_rows,
                     keep_mask=keep_mask,
@@ -213,6 +215,8 @@ class SemanticDeduplicator:
         if not pending_rows:
             return
 
+        # Encode and judge one batch at a time so large datasets do not hold
+        # a full in-memory embedding matrix in addition to the FAISS index.
         batch_rows = pending_rows.copy()
         pending_rows.clear()
         texts = [text for _, text in batch_rows]
@@ -376,6 +380,8 @@ class _capture_process_output:
         self._stderr_file = tempfile.TemporaryFile(mode="w+b")
         sys.stdout.flush()
         sys.stderr.flush()
+        # Some model backends write directly to the process file descriptors
+        # instead of Python's sys.stdout/sys.stderr, so redirect both layers.
         self._stdout_fd = os.dup(sys.__stdout__.fileno())
         self._stderr_fd = os.dup(sys.__stderr__.fileno())
         os.dup2(self._stdout_file.fileno(), sys.__stdout__.fileno())

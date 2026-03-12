@@ -72,6 +72,12 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --t
 uv run python main.py --action deduplicate --input-file <输入文件路径> --dedupe-mode semantic --embedding-model-path models/m3e-base --semantic-threshold 0.9
 ```
 
+指定近似语义索引：
+
+```bash
+uv run python main.py --action deduplicate --input-file <输入文件路径> --dedupe-mode semantic --semantic-index-type hnsw --semantic-hnsw-m 32
+```
+
 ## 命令行参数
 
 | 参数 | 是否必填 | 说明 | 支持的值 |
@@ -85,6 +91,8 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 | `--semantic-threshold` | 否 | 指定语义去重阈值。仅对 `--dedupe-mode semantic` 生效。阈值越高，判重越保守。 | `0` 到 `1` 之间的小数，默认 `0.9` |
 | `--embedding-model-path` | 否 | 指定语义去重使用的本地 embedding 模型目录。仅对 `--dedupe-mode semantic` 生效。 | 合法本地模型目录路径，默认 `models/m3e-base` |
 | `--batch-size` | 否 | 指定语义去重时 embedding 编码批大小。仅对 `--dedupe-mode semantic` 生效。 | 大于 `0` 的整数，默认 `64` |
+| `--semantic-index-type` | 否 | 指定语义去重使用的向量索引类型。`flat` 为精确检索，`hnsw` 为近似检索。 | `flat`、`hnsw`，默认 `flat` |
+| `--semantic-hnsw-m` | 否 | 指定 `hnsw` 索引的图连接度参数 `M`。仅对 `--semantic-index-type hnsw` 生效。 | 大于 `0` 的整数，默认 `32` |
 
 ## 参数示例
 
@@ -98,6 +106,7 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 | 指定去重目标列执行去重 | `uv run python main.py --action deduplicate --input-file data.xlsx --target-column 用户问题` |
 | 使用语义去重 | `uv run python main.py --action deduplicate --input-file data.csv --dedupe-mode semantic` |
 | 指定语义模型路径和阈值 | `uv run python main.py --action deduplicate --input-file data.csv --dedupe-mode semantic --embedding-model-path models/m3e-base --semantic-threshold 0.9` |
+| 指定近似语义索引 | `uv run python main.py --action deduplicate --input-file data.csv --dedupe-mode semantic --semantic-index-type hnsw --semantic-hnsw-m 32` |
 | 先清洗再去重 | `uv run python main.py --action clean-deduplicate --input-file data.csv` |
 | 先清洗再做语义去重 | `uv run python main.py --action clean-deduplicate --input-file data.csv --dedupe-mode semantic` |
 
@@ -161,9 +170,11 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 ## 语义去重说明
 
 - 语义去重使用本地 `m3e-base` 模型生成句向量，并通过 `faiss` 做最近邻检索。
+- 默认索引类型为 `flat`，即精确内积检索；如果更关注大规模性能，可以切换为 `hnsw` 近似检索。
 - 默认模型路径为 `models/m3e-base`。你当前仓库里可以直接通过软链接访问本地模型。
 - `semantic` 模式会额外生成 `*_matches.csv`，用于审计每条被删除文本命中了哪条代表文本，以及对应的相似度分数。
-- `csv` 仍按分块流式处理，但内存中会保留代表文本向量索引；数据越多、代表文本越多，内存占用也会随之增长。
+- `csv` 路径会按块读取、按批生成 embedding，并将 `*_matches.csv` 命中明细按块追加写盘，避免一次性堆积全量向量和命中明细。
+- 即便如此，内存中仍会保留代表文本向量索引；数据越多、代表文本越多，内存占用也会随之增长。
 
 ## 流水线说明
 
@@ -185,6 +196,7 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 - 基于目标列删除全是乱码的行
 - 基于目标列做标准化后精确去重
 - 支持基于本地 `m3e-base` + `faiss` 的语义去重
+- 支持通过 `--semantic-index-type` 在精确检索和近似检索之间切换
 - 支持显式流水线 `clean-deduplicate`
 - 去重标准固定为：去首尾空格、压缩连续空白、大小写归一
 - 语义去重可通过 `--semantic-threshold` 调整判重保守程度

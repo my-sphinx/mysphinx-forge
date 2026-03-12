@@ -269,16 +269,16 @@ def _run_deduplicate(
             output_path=output_path,
             action="deduplicate",
             input_path=input_path,
-            parameters={
-                "chunk_size": chunk_size,
-                "target_column": target_column,
-                "dedupe_mode": dedupe_mode,
-                "semantic_threshold": semantic_threshold,
-                "embedding_model_path": embedding_model_path,
-                "batch_size": batch_size,
-                "semantic_index_type": semantic_index_type,
-                "semantic_hnsw_m": semantic_hnsw_m,
-            },
+            parameters=_build_deduplication_parameters(
+                chunk_size=chunk_size,
+                target_column=target_column,
+                dedupe_mode=dedupe_mode,
+                semantic_threshold=semantic_threshold,
+                embedding_model_path=embedding_model_path,
+                batch_size=batch_size,
+                semantic_index_type=semantic_index_type,
+                semantic_hnsw_m=semantic_hnsw_m,
+            ),
             deduplication_stats=stats,
             match_output_path=_resolve_match_output_path(output_path) if dedupe_mode == "semantic" else None,
         )
@@ -320,16 +320,16 @@ def _run_deduplicate(
         output_path=output_path,
         action="deduplicate",
         input_path=input_path,
-        parameters={
-            "chunk_size": chunk_size,
-            "target_column": target_column,
-            "dedupe_mode": dedupe_mode,
-            "semantic_threshold": semantic_threshold,
-            "embedding_model_path": embedding_model_path,
-            "batch_size": batch_size,
-            "semantic_index_type": semantic_index_type,
-            "semantic_hnsw_m": semantic_hnsw_m,
-        },
+        parameters=_build_deduplication_parameters(
+            chunk_size=chunk_size,
+            target_column=target_column,
+            dedupe_mode=dedupe_mode,
+            semantic_threshold=semantic_threshold,
+            embedding_model_path=embedding_model_path,
+            batch_size=batch_size,
+            semantic_index_type=semantic_index_type,
+            semantic_hnsw_m=semantic_hnsw_m,
+        ),
         deduplication_stats=stats,
         match_output_path=_resolve_match_output_path(output_path) if dedupe_mode == "semantic" else None,
     )
@@ -570,7 +570,9 @@ def _run_deduplicate_csv_stream(
             total_stats.dedupe_mode = chunk_stats.dedupe_mode
             total_stats.semantic_threshold = chunk_stats.semantic_threshold
             total_stats.embedding_model_path = chunk_stats.embedding_model_path
-            _append_match_rows(chunk_match_rows, output_path)
+            # Keep semantic audit rows on disk while streaming so duplicate-heavy
+            # datasets do not accumulate a second large in-memory result set.
+            _write_match_rows(chunk_match_rows, output_path, append=True)
             deduplicated_chunk.to_csv(output_path, mode="a", index=False, header=not wrote_header)
             wrote_header = True
             write_bar.advance(1)
@@ -628,24 +630,18 @@ def _run_clean_deduplicate_csv(
             output_path=output_path,
             action="clean-deduplicate",
             input_path=input_path,
-            parameters={
-                "chunk_size": chunk_size,
-                "target_column": target_column,
-                "dedupe_mode": dedupe_mode,
-                "embedding_model_path": (
+            parameters=_build_deduplication_parameters(
+                chunk_size=chunk_size,
+                target_column=target_column,
+                dedupe_mode=dedupe_mode,
+                semantic_threshold=semantic_deduplicator.threshold if semantic_deduplicator else None,
+                embedding_model_path=(
                     str(semantic_deduplicator.model_path) if semantic_deduplicator else None
                 ),
-                "semantic_threshold": (
-                    semantic_deduplicator.threshold if semantic_deduplicator else None
-                ),
-                "batch_size": semantic_deduplicator.batch_size if semantic_deduplicator else None,
-                "semantic_index_type": (
-                    semantic_deduplicator.index_type if semantic_deduplicator else None
-                ),
-                "semantic_hnsw_m": (
-                    semantic_deduplicator.hnsw_m if semantic_deduplicator else None
-                ),
-            },
+                batch_size=semantic_deduplicator.batch_size if semantic_deduplicator else None,
+                semantic_index_type=semantic_deduplicator.index_type if semantic_deduplicator else None,
+                semantic_hnsw_m=semantic_deduplicator.hnsw_m if semantic_deduplicator else None,
+            ),
             cleaning_stats=clean_stats,
             deduplication_stats=dedupe_stats,
             match_output_path=_resolve_match_output_path(output_path) if dedupe_mode == "semantic" else None,
@@ -784,6 +780,28 @@ def _write_meta(
     )
 
 
+def _build_deduplication_parameters(
+    chunk_size: int,
+    target_column: str,
+    dedupe_mode: str,
+    semantic_threshold: float | None,
+    embedding_model_path: str | None,
+    batch_size: int | None,
+    semantic_index_type: str | None,
+    semantic_hnsw_m: int | None,
+) -> dict[str, object]:
+    return {
+        "chunk_size": chunk_size,
+        "target_column": target_column,
+        "dedupe_mode": dedupe_mode,
+        "semantic_threshold": semantic_threshold,
+        "embedding_model_path": embedding_model_path,
+        "batch_size": batch_size,
+        "semantic_index_type": semantic_index_type,
+        "semantic_hnsw_m": semantic_hnsw_m,
+    }
+
+
 def _build_semantic_deduplicator(
     dedupe_mode: str,
     embedding_model_path: str,
@@ -832,24 +850,20 @@ def _deduplicate_dataframe(
     return deduplicated, stats, []
 
 
-def _write_match_rows(match_rows: list[SemanticDeduplicationMatch], output_path: Path) -> None:
-    if not match_rows:
-        return
-
-    match_output_path = _resolve_match_output_path(output_path)
-    _build_match_frame(match_rows).to_csv(match_output_path, index=False)
-
-
-def _append_match_rows(match_rows: list[SemanticDeduplicationMatch], output_path: Path) -> None:
+def _write_match_rows(
+    match_rows: list[SemanticDeduplicationMatch],
+    output_path: Path,
+    append: bool = False,
+) -> None:
     if not match_rows:
         return
 
     match_output_path = _resolve_match_output_path(output_path)
     _build_match_frame(match_rows).to_csv(
         match_output_path,
-        mode="a",
+        mode="a" if append else "w",
         index=False,
-        header=not match_output_path.exists(),
+        header=not append or not match_output_path.exists(),
     )
 
 
