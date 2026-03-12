@@ -422,10 +422,19 @@ def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys
     )
 
     class FakeSemanticDeduplicator:
-        def __init__(self, model_path: str, threshold: float, batch_size: int) -> None:
+        def __init__(
+            self,
+            model_path: str,
+            threshold: float,
+            batch_size: int,
+            index_type: str = "flat",
+            hnsw_m: int = 32,
+        ) -> None:
             self.model_path = model_path
             self.threshold = threshold
             self.batch_size = batch_size
+            self.index_type = index_type
+            self.hnsw_m = hnsw_m
 
     def fake_semantic_deduplicate_dataframe(
         dataframe,
@@ -503,6 +512,8 @@ def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys
     assert meta["action"] == "deduplicate"
     assert meta["deduplication_stats"]["dedupe_mode"] == "semantic"
     assert meta["match_file"] == str(match_file)
+    assert meta["parameters"]["semantic_index_type"] == "flat"
+    assert meta["parameters"]["semantic_hnsw_m"] == 32
 
 
 def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -> None:
@@ -512,10 +523,19 @@ def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -
     )
 
     class FakeSemanticDeduplicator:
-        def __init__(self, model_path: str, threshold: float, batch_size: int) -> None:
+        def __init__(
+            self,
+            model_path: str,
+            threshold: float,
+            batch_size: int,
+            index_type: str = "flat",
+            hnsw_m: int = 32,
+        ) -> None:
             self.model_path = model_path
             self.threshold = threshold
             self.batch_size = batch_size
+            self.index_type = index_type
+            self.hnsw_m = hnsw_m
 
     def fake_semantic_deduplicate_dataframe(
         dataframe,
@@ -589,6 +609,8 @@ def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -
     assert meta["cleaning_stats"]["removed_symbol_rows"] == 1
     assert meta["deduplication_stats"]["dedupe_mode"] == "semantic"
     assert meta["match_file"] == str(match_file)
+    assert meta["parameters"]["semantic_index_type"] == "flat"
+    assert meta["parameters"]["semantic_hnsw_m"] == 32
 
 
 def test_main_rejects_invalid_semantic_threshold(monkeypatch, capsys) -> None:
@@ -613,3 +635,29 @@ def test_main_rejects_invalid_semantic_threshold(monkeypatch, capsys) -> None:
 
     assert exit_code == 1
     assert "--semantic-threshold 必须在 0 到 1 之间。" in captured.out
+
+
+def test_main_rejects_invalid_semantic_hnsw_m(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "deduplicate",
+            "--input-file",
+            "input.csv",
+            "--dedupe-mode",
+            "semantic",
+            "--semantic-index-type",
+            "hnsw",
+            "--semantic-hnsw-m",
+            "0",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "--semantic-hnsw-m 必须是大于 0 的整数。" in captured.out

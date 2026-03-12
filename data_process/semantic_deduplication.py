@@ -38,12 +38,16 @@ class SemanticDeduplicator:
         model_path: str | Path = DEFAULT_EMBEDDING_MODEL_PATH,
         threshold: float = 0.9,
         batch_size: int = 64,
+        index_type: str = "flat",
+        hnsw_m: int = 32,
         model: object | None = None,
         index: object | None = None,
     ) -> None:
         self.model_path = Path(model_path)
         self.threshold = threshold
         self.batch_size = batch_size
+        self.index_type = index_type
+        self.hnsw_m = hnsw_m
         self._model = model
         self._index = index
         self._representative_row_indices: list[int] = []
@@ -63,7 +67,6 @@ class SemanticDeduplicator:
     ) -> tuple[pd.DataFrame, DeduplicationStats, list[SemanticDeduplicationMatch]]:
         resolved_target_column = resolve_target_column(dataframe, target_column)
         normalized_texts = [normalize_dedup_text(value) for value in dataframe[resolved_target_column].tolist()]
-        embeddings = self._encode_non_blank_texts(normalized_texts)
 
         stats = DeduplicationStats(
             total_before=len(dataframe),
@@ -75,38 +78,60 @@ class SemanticDeduplicator:
         )
         keep_mask: list[bool] = []
         processed_since_report = 0
-        embedding_index = 0
         matches: list[SemanticDeduplicationMatch] = []
+        pending_rows: list[tuple[int, str]] = []
 
         for row_index, normalized_text in enumerate(normalized_texts):
             processed_since_report += 1
             global_row_index = row_index_offset + row_index
 
             if normalized_text == "":
+                self._flush_pending_rows(
+                    pending_rows=pending_rows,
+                    keep_mask=keep_mask,
+                    stats=stats,
+                    matches=matches,
+                    collect_matches=collect_matches,
+                )
                 is_duplicate, match = self._handle_blank_text(
                     row_index=global_row_index,
                     text=normalized_text,
                 )
             else:
-                vector = embeddings[embedding_index]
-                embedding_index += 1
-                is_duplicate, match = self._handle_vector(
-                    vector=vector,
-                    row_index=global_row_index,
-                    text=normalized_text,
-                )
+                pending_rows.append((global_row_index, normalized_text))
+                if len(pending_rows) >= self.batch_size:
+                    self._flush_pending_rows(
+                        pending_rows=pending_rows,
+                        keep_mask=keep_mask,
+                        stats=stats,
+                        matches=matches,
+                        collect_matches=collect_matches,
+                    )
+                if progress_callback and processed_since_report >= report_every:
+                    progress_callback(processed_since_report)
+                    processed_since_report = 0
+                continue
 
-            if is_duplicate:
-                stats.duplicate_rows += 1
-                keep_mask.append(False)
-                if collect_matches and match is not None:
-                    matches.append(match)
-            else:
-                keep_mask.append(True)
+            self._record_row_result(
+                is_duplicate=is_duplicate,
+                match=match,
+                keep_mask=keep_mask,
+                stats=stats,
+                matches=matches,
+                collect_matches=collect_matches,
+            )
 
             if progress_callback and processed_since_report >= report_every:
                 progress_callback(processed_since_report)
                 processed_since_report = 0
+
+        self._flush_pending_rows(
+            pending_rows=pending_rows,
+            keep_mask=keep_mask,
+            stats=stats,
+            matches=matches,
+            collect_matches=collect_matches,
+        )
 
         if progress_callback and processed_since_report > 0:
             progress_callback(processed_since_report)
@@ -167,19 +192,64 @@ class SemanticDeduplicator:
         self._representative_row_indices.append(row_index)
         self._representative_texts.append(text)
 
-    def _encode_non_blank_texts(self, normalized_texts: list[str]):
-        texts_to_encode = [text for text in normalized_texts if text]
-        if not texts_to_encode:
-            return []
-
+    def _encode_texts(self, texts: list[str]):
         model = self._ensure_model()
         return model.encode(
-            texts_to_encode,
+            texts,
             batch_size=self.batch_size,
             normalize_embeddings=True,
             convert_to_numpy=True,
             show_progress_bar=False,
         )
+
+    def _flush_pending_rows(
+        self,
+        pending_rows: list[tuple[int, str]],
+        keep_mask: list[bool],
+        stats: DeduplicationStats,
+        matches: list[SemanticDeduplicationMatch],
+        collect_matches: bool,
+    ) -> None:
+        if not pending_rows:
+            return
+
+        batch_rows = pending_rows.copy()
+        pending_rows.clear()
+        texts = [text for _, text in batch_rows]
+        vectors = self._encode_texts(texts)
+
+        for (row_index, text), vector in zip(batch_rows, vectors, strict=True):
+            is_duplicate, match = self._handle_vector(
+                vector=vector,
+                row_index=row_index,
+                text=text,
+            )
+            self._record_row_result(
+                is_duplicate=is_duplicate,
+                match=match,
+                keep_mask=keep_mask,
+                stats=stats,
+                matches=matches,
+                collect_matches=collect_matches,
+            )
+
+    def _record_row_result(
+        self,
+        is_duplicate: bool,
+        match: SemanticDeduplicationMatch | None,
+        keep_mask: list[bool],
+        stats: DeduplicationStats,
+        matches: list[SemanticDeduplicationMatch],
+        collect_matches: bool,
+    ) -> None:
+        if is_duplicate:
+            stats.duplicate_rows += 1
+            keep_mask.append(False)
+            if collect_matches and match is not None:
+                matches.append(match)
+            return
+
+        keep_mask.append(True)
 
     def _ensure_model(self):
         if self._model is None:
@@ -188,7 +258,11 @@ class SemanticDeduplicator:
 
     def _ensure_index(self, dimension: int) -> None:
         if self._index is None:
-            self._index = _create_faiss_index(dimension)
+            self._index = _create_faiss_index(
+                dimension=dimension,
+                index_type=self.index_type,
+                hnsw_m=self.hnsw_m,
+            )
 
 
 def semantic_deduplicate_dataframe(
@@ -197,6 +271,8 @@ def semantic_deduplicate_dataframe(
     threshold: float = 0.9,
     model_path: str | Path = DEFAULT_EMBEDDING_MODEL_PATH,
     batch_size: int = 64,
+    index_type: str = "flat",
+    hnsw_m: int = 32,
     progress_callback: Callable[[int], None] | None = None,
     report_every: int = 1_000,
     row_index_offset: int = 0,
@@ -207,6 +283,8 @@ def semantic_deduplicate_dataframe(
         model_path=model_path,
         threshold=threshold,
         batch_size=batch_size,
+        index_type=index_type,
+        hnsw_m=hnsw_m,
     )
     return active_deduplicator.deduplicate_dataframe(
         dataframe,
@@ -315,10 +393,14 @@ class _capture_process_output:
         self._stderr_file.flush()
 
 
-def _create_faiss_index(dimension: int):
+def _create_faiss_index(dimension: int, index_type: str = "flat", hnsw_m: int = 32):
     try:
         import faiss
     except ImportError as exc:
         raise ValueError("未安装 faiss-cpu，请先执行 uv sync。") from exc
 
-    return faiss.IndexFlatIP(dimension)
+    if index_type == "flat":
+        return faiss.IndexFlatIP(dimension)
+    if index_type == "hnsw":
+        return faiss.IndexHNSWFlat(dimension, hnsw_m, faiss.METRIC_INNER_PRODUCT)
+    raise ValueError(f"不支持的语义索引类型：{index_type}")

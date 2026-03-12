@@ -8,6 +8,7 @@ import pandas as pd
 
 from data_process.semantic_deduplication import (
     SemanticDeduplicator,
+    _create_faiss_index,
     _load_embedding_model,
     semantic_deduplicate_dataframe,
 )
@@ -31,6 +32,29 @@ class FakeModel:
         show_progress_bar=False,
     ):
         return [FakeVector(self.vector_map[text]) for text in texts]
+
+
+class RecordingFakeModel(FakeModel):
+    def __init__(self, vector_map: dict[str, list[float]]) -> None:
+        super().__init__(vector_map)
+        self.calls: list[list[str]] = []
+
+    def encode(
+        self,
+        texts,
+        batch_size=64,
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+        show_progress_bar=False,
+    ):
+        self.calls.append(list(texts))
+        return super().encode(
+            texts,
+            batch_size=batch_size,
+            normalize_embeddings=normalize_embeddings,
+            convert_to_numpy=convert_to_numpy,
+            show_progress_bar=show_progress_bar,
+        )
 
 
 class FakeFaissIndex:
@@ -137,6 +161,30 @@ def test_semantic_deduplicate_dataframe_reports_progress() -> None:
     assert reported == [2, 1]
 
 
+def test_semantic_deduplicate_dataframe_streams_embedding_batches() -> None:
+    dataframe = pd.DataFrame({"text": ["a", "b", "c", " ", "d"]})
+    vector_map = {
+        "a": [1.0, 0.0],
+        "b": [0.0, 1.0],
+        "c": [0.7, 0.7],
+        "d": [0.4, 0.9],
+    }
+    model = RecordingFakeModel(vector_map)
+    deduplicator = SemanticDeduplicator(
+        model_path="models/m3e-base",
+        threshold=0.95,
+        batch_size=2,
+        model=model,
+        index=FakeFaissIndex(2),
+    )
+
+    deduplicated, stats, _ = deduplicator.deduplicate_dataframe(dataframe)
+
+    assert deduplicated["text"].tolist() == ["a", "b", "c", " ", "d"]
+    assert stats.total_after == 5
+    assert model.calls == [["a", "b"], ["c"], ["d"]]
+
+
 def test_semantic_deduplicate_dataframe_uses_target_column() -> None:
     dataframe = pd.DataFrame(
         {
@@ -214,6 +262,27 @@ def test_load_embedding_model_replays_non_benign_output(
 
     captured = capsys.readouterr()
     assert "loading custom backend" in captured.out
+
+
+def test_create_faiss_index_supports_hnsw(monkeypatch) -> None:
+    recorded: dict[str, object] = {}
+
+    class FakeFaissModule:
+        METRIC_INNER_PRODUCT = 0
+
+        @staticmethod
+        def IndexHNSWFlat(dimension: int, hnsw_m: int, metric: int):
+            recorded["dimension"] = dimension
+            recorded["hnsw_m"] = hnsw_m
+            recorded["metric"] = metric
+            return "hnsw-index"
+
+    monkeypatch.setitem(sys.modules, "faiss", FakeFaissModule)
+
+    index = _create_faiss_index(dimension=768, index_type="hnsw", hnsw_m=48)
+
+    assert index == "hnsw-index"
+    assert recorded == {"dimension": 768, "hnsw_m": 48, "metric": 0}
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

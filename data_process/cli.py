@@ -80,6 +80,18 @@ def main() -> int:
         default=64,
         help="语义去重时 embedding 编码批大小，默认 64。",
     )
+    parser.add_argument(
+        "--semantic-index-type",
+        choices=["flat", "hnsw"],
+        default="flat",
+        help="语义去重向量索引类型。flat 为精确检索，hnsw 为近似检索，默认 flat。",
+    )
+    parser.add_argument(
+        "--semantic-hnsw-m",
+        type=int,
+        default=32,
+        help="语义索引为 hnsw 时的图连接度参数 M，默认 32。",
+    )
 
     args = parser.parse_args()
     if not args.input_file:
@@ -90,6 +102,9 @@ def main() -> int:
         return 1
     if args.batch_size <= 0:
         print("--batch-size 必须是大于 0 的整数。")
+        return 1
+    if args.semantic_hnsw_m <= 0:
+        print("--semantic-hnsw-m 必须是大于 0 的整数。")
         return 1
     if not 0 < args.semantic_threshold <= 1:
         print("--semantic-threshold 必须在 0 到 1 之间。")
@@ -107,6 +122,8 @@ def main() -> int:
             args.semantic_threshold,
             args.embedding_model_path,
             args.batch_size,
+            args.semantic_index_type,
+            args.semantic_hnsw_m,
         )
     if args.action == "clean-deduplicate":
         return _run_clean_deduplicate(
@@ -118,6 +135,8 @@ def main() -> int:
             args.semantic_threshold,
             args.embedding_model_path,
             args.batch_size,
+            args.semantic_index_type,
+            args.semantic_hnsw_m,
         )
 
     parser.print_help()
@@ -209,6 +228,8 @@ def _run_deduplicate(
     semantic_threshold: float,
     embedding_model_path: str,
     batch_size: int,
+    semantic_index_type: str,
+    semantic_hnsw_m: int,
 ) -> int:
     input_path = Path(input_file)
     output_path = _resolve_deduplicate_output_path(input_path, output_arg)
@@ -225,6 +246,8 @@ def _run_deduplicate(
         embedding_model_path,
         semantic_threshold,
         batch_size,
+        semantic_index_type,
+        semantic_hnsw_m,
     )
 
     if input_path.suffix.lower() == ".csv":
@@ -253,6 +276,8 @@ def _run_deduplicate(
                 "semantic_threshold": semantic_threshold,
                 "embedding_model_path": embedding_model_path,
                 "batch_size": batch_size,
+                "semantic_index_type": semantic_index_type,
+                "semantic_hnsw_m": semantic_hnsw_m,
             },
             deduplication_stats=stats,
             match_output_path=_resolve_match_output_path(output_path) if dedupe_mode == "semantic" else None,
@@ -302,6 +327,8 @@ def _run_deduplicate(
             "semantic_threshold": semantic_threshold,
             "embedding_model_path": embedding_model_path,
             "batch_size": batch_size,
+            "semantic_index_type": semantic_index_type,
+            "semantic_hnsw_m": semantic_hnsw_m,
         },
         deduplication_stats=stats,
         match_output_path=_resolve_match_output_path(output_path) if dedupe_mode == "semantic" else None,
@@ -320,6 +347,8 @@ def _run_clean_deduplicate(
     semantic_threshold: float,
     embedding_model_path: str,
     batch_size: int,
+    semantic_index_type: str,
+    semantic_hnsw_m: int,
 ) -> int:
     input_path = Path(input_file)
     output_path = _resolve_deduplicate_output_path(input_path, output_arg)
@@ -336,6 +365,8 @@ def _run_clean_deduplicate(
         embedding_model_path,
         semantic_threshold,
         batch_size,
+        semantic_index_type,
+        semantic_hnsw_m,
     )
 
     if input_path.suffix.lower() == ".csv":
@@ -494,7 +525,6 @@ def _run_deduplicate_csv_stream(
 ) -> DeduplicationStats:
     total_stats = DeduplicationStats(total_before=0, total_after=0)
     seen_keys: set[str] = set()
-    match_rows: list[SemanticDeduplicationMatch] = []
     processed_rows = 0
 
     run_stage("统计总行数", logger=logger)
@@ -540,7 +570,7 @@ def _run_deduplicate_csv_stream(
             total_stats.dedupe_mode = chunk_stats.dedupe_mode
             total_stats.semantic_threshold = chunk_stats.semantic_threshold
             total_stats.embedding_model_path = chunk_stats.embedding_model_path
-            match_rows.extend(chunk_match_rows)
+            _append_match_rows(chunk_match_rows, output_path)
             deduplicated_chunk.to_csv(output_path, mode="a", index=False, header=not wrote_header)
             wrote_header = True
             write_bar.advance(1)
@@ -556,7 +586,6 @@ def _run_deduplicate_csv_stream(
         progress_bar.close()
         write_bar.close()
 
-    _write_match_rows(match_rows, output_path)
     return total_stats
 
 
@@ -610,6 +639,12 @@ def _run_clean_deduplicate_csv(
                     semantic_deduplicator.threshold if semantic_deduplicator else None
                 ),
                 "batch_size": semantic_deduplicator.batch_size if semantic_deduplicator else None,
+                "semantic_index_type": (
+                    semantic_deduplicator.index_type if semantic_deduplicator else None
+                ),
+                "semantic_hnsw_m": (
+                    semantic_deduplicator.hnsw_m if semantic_deduplicator else None
+                ),
             },
             cleaning_stats=clean_stats,
             deduplication_stats=dedupe_stats,
@@ -754,6 +789,8 @@ def _build_semantic_deduplicator(
     embedding_model_path: str,
     semantic_threshold: float,
     batch_size: int,
+    semantic_index_type: str,
+    semantic_hnsw_m: int,
 ) -> SemanticDeduplicator | None:
     if dedupe_mode != "semantic":
         return None
@@ -762,6 +799,8 @@ def _build_semantic_deduplicator(
         model_path=embedding_model_path,
         threshold=semantic_threshold,
         batch_size=batch_size,
+        index_type=semantic_index_type,
+        hnsw_m=semantic_hnsw_m,
     )
 
 
@@ -798,7 +837,24 @@ def _write_match_rows(match_rows: list[SemanticDeduplicationMatch], output_path:
         return
 
     match_output_path = _resolve_match_output_path(output_path)
-    match_frame = pd.DataFrame(
+    _build_match_frame(match_rows).to_csv(match_output_path, index=False)
+
+
+def _append_match_rows(match_rows: list[SemanticDeduplicationMatch], output_path: Path) -> None:
+    if not match_rows:
+        return
+
+    match_output_path = _resolve_match_output_path(output_path)
+    _build_match_frame(match_rows).to_csv(
+        match_output_path,
+        mode="a",
+        index=False,
+        header=not match_output_path.exists(),
+    )
+
+
+def _build_match_frame(match_rows: list[SemanticDeduplicationMatch]) -> pd.DataFrame:
+    return pd.DataFrame(
         [
             {
                 "row_index": match.row_index,
@@ -810,4 +866,3 @@ def _write_match_rows(match_rows: list[SemanticDeduplicationMatch], output_path:
             for match in match_rows
         ]
     )
-    match_frame.to_csv(match_output_path, index=False)
