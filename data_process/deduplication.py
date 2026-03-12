@@ -19,6 +19,9 @@ class DeduplicationStats:
     duplicate_rows: int = 0
     unique_values: int = 0
     target_column: str = ""
+    dedupe_mode: str = "exact"
+    semantic_threshold: float | None = None
+    embedding_model_path: str | None = None
 
 
 def deduplicate_dataframe(
