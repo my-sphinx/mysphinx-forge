@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-03-19T09:42:06.200451+00:00",
+  "action": "clean-deduplicate",
+  "input_file": "/Users/dereck/Code/pingan/data-process/data/input.xlsx",
+  "output_file": "/Users/dereck/Code/pingan/data-process/data/input_deduplicated.xlsx",
+  "log_file": "/Users/dereck/Code/pingan/data-process/data/data-process.log",
+  "parameters": {
+    "chunk_size": 50000,
+    "target_column": "text",
+    "dedupe_mode": "semantic",
+    "semantic_threshold": 0.9,
+    "embedding_model_path": "models/m3e-base",
+    "batch_size": 64
+  },
+  "cleaning_stats": {
+    "total_before": 1000,
+    "removed_blank_rows": 10,
+    "removed_symbol_rows": 0,
+    "removed_emoji_rows": 0,
+    "removed_garbled_rows": 0,
+    "total_removed": 10,
+    "total_after": 990
+  },
+  "deduplication_stats": {
+    "target_column": "text",
+    "dedupe_mode": "semantic",
+    "semantic_threshold": 0.9,
+    "embedding_model_path": "models/m3e-base",
+    "total_before": 990,
+    "duplicate_rows": 204,
+    "unique_values": 786,
+    "total_after": 786
+  },
+  "match_file": "/Users/dereck/Code/pingan/data-process/data/input_deduplicated_matches.csv"
+}
