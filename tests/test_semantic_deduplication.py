@@ -85,7 +85,10 @@ class FakeFaissIndex:
 
 def test_semantic_deduplicate_dataframe_removes_semantic_duplicates() -> None:
     dataframe = pd.DataFrame(
-        {"text": ["退款怎么申请", "怎么申请退款", "我要开发票", "发票如何申请"]}
+        {
+            "text": ["退款怎么申请", "怎么申请退款", "我要开发票", "发票如何申请"],
+            "category": ["售后", "售后-重复", "财务", "财务-重复"],
+        }
     )
     vector_map = {
         "退款怎么申请": [1.0, 0.0],
@@ -114,6 +117,10 @@ def test_semantic_deduplicate_dataframe_removes_semantic_duplicates() -> None:
     assert stats.unique_values == 2
     assert matches[0].duplicate_of_row_index == 0
     assert matches[1].duplicate_of_row_index == 2
+    assert matches[0].category == "售后-重复"
+    assert matches[0].matched_category == "售后"
+    assert matches[1].category == "财务-重复"
+    assert matches[1].matched_category == "财务"
 
 
 def test_semantic_deduplicate_dataframe_tracks_blank_duplicates() -> None:

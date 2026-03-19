@@ -78,6 +78,8 @@ def test_write_match_rows_supports_append_mode(tmp_path) -> None:
             duplicate_of_row_index=0,
             text="怎么申请退款",
             matched_text="退款怎么申请",
+            category="售后",
+            matched_category="售后",
             similarity=0.95,
         )
     ]
@@ -87,6 +89,8 @@ def test_write_match_rows_supports_append_mode(tmp_path) -> None:
             duplicate_of_row_index=2,
             text="怎么开发票",
             matched_text="发票怎么开",
+            category="发票",
+            matched_category="财务",
             similarity=0.93,
         )
     ]
@@ -97,3 +101,6 @@ def test_write_match_rows_supports_append_mode(tmp_path) -> None:
     written = pd.read_csv(output_file)
     assert written["row_index"].tolist() == [1, 3]
     assert written["duplicate_of_row_index"].tolist() == [0, 2]
+    assert written["category"].tolist() == ["售后", "发票"]
+    assert written["matched_category"].tolist() == ["售后", "财务"]
+    assert written["same_category"].tolist() == [True, False]

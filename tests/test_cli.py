@@ -417,7 +417,12 @@ def test_main_rejects_missing_target_column_for_deduplicate(
 
 def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys) -> None:
     input_file = tmp_path / "input.csv"
-    pd.DataFrame({"text": ["退款怎么申请", "怎么申请退款", "发票怎么开"]}).to_csv(
+    pd.DataFrame(
+        {
+            "text": ["退款怎么申请", "怎么申请退款", "发票怎么开"],
+            "category": ["售后", "售后-重复", "财务"],
+        }
+    ).to_csv(
         input_file, index=False
     )
 
@@ -466,6 +471,8 @@ def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys
                 duplicate_of_row_index=row_index_offset,
                 text="怎么申请退款",
                 matched_text="退款怎么申请",
+                category="售后-重复",
+                matched_category="售后",
                 similarity=0.96,
             )
         ]
@@ -508,6 +515,9 @@ def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys
     assert deduplicated["text"].tolist() == ["退款怎么申请", "发票怎么开"]
     match_rows = pd.read_csv(match_file)
     assert match_rows["duplicate_of_row_index"].tolist() == [0]
+    assert match_rows["category"].tolist() == ["售后-重复"]
+    assert match_rows["matched_category"].tolist() == ["售后"]
+    assert match_rows["same_category"].tolist() == [False]
     meta = json.loads((tmp_path / "input_deduplicated.meta.json").read_text(encoding="utf-8"))
     assert meta["action"] == "deduplicate"
     assert meta["deduplication_stats"]["dedupe_mode"] == "semantic"
@@ -518,7 +528,12 @@ def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys
 
 def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -> None:
     input_file = tmp_path / "input.csv"
-    pd.DataFrame({"text": ["!!!", "退款怎么申请", "怎么申请退款"]}).to_csv(
+    pd.DataFrame(
+        {
+            "text": ["!!!", "退款怎么申请", "怎么申请退款"],
+            "category": ["噪声", "售后", "售后-重复"],
+        }
+    ).to_csv(
         input_file, index=False
     )
 
@@ -567,6 +582,8 @@ def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -
                 duplicate_of_row_index=row_index_offset,
                 text="怎么申请退款",
                 matched_text="退款怎么申请",
+                category="售后-重复",
+                matched_category="售后",
                 similarity=0.96,
             )
         ]
@@ -602,6 +619,10 @@ def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -
     assert match_file.exists()
     deduplicated = pd.read_csv(output_file)
     assert deduplicated["text"].tolist() == ["退款怎么申请"]
+    match_rows = pd.read_csv(match_file)
+    assert match_rows["category"].tolist() == ["售后-重复"]
+    assert match_rows["matched_category"].tolist() == ["售后"]
+    assert match_rows["same_category"].tolist() == [False]
     log_text = (tmp_path / "data-process.log").read_text(encoding="utf-8")
     assert "开始执行 action=clean-deduplicate" in log_text
     meta = json.loads((tmp_path / "input_deduplicated.meta.json").read_text(encoding="utf-8"))

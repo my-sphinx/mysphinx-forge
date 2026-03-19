@@ -29,6 +29,8 @@ class SemanticDeduplicationMatch:
     duplicate_of_row_index: int
     text: str
     matched_text: str
+    category: object | None
+    matched_category: object | None
     similarity: float
 
 
@@ -52,9 +54,11 @@ class SemanticDeduplicator:
         self._index = index
         self._representative_row_indices: list[int] = []
         self._representative_texts: list[str] = []
+        self._representative_categories: list[object | None] = []
         self._seen_blank = False
         self._blank_row_index: int | None = None
         self._blank_text = ""
+        self._blank_category: object | None = None
 
     def deduplicate_dataframe(
         self,
@@ -67,6 +71,11 @@ class SemanticDeduplicator:
     ) -> tuple[pd.DataFrame, DeduplicationStats, list[SemanticDeduplicationMatch]]:
         resolved_target_column = resolve_target_column(dataframe, target_column)
         normalized_texts = [normalize_dedup_text(value) for value in dataframe[resolved_target_column].tolist()]
+        categories = (
+            dataframe["category"].tolist()
+            if "category" in dataframe.columns
+            else [None] * len(dataframe)
+        )
 
         stats = DeduplicationStats(
             total_before=len(dataframe),
@@ -84,6 +93,7 @@ class SemanticDeduplicator:
         for row_index, normalized_text in enumerate(normalized_texts):
             processed_since_report += 1
             global_row_index = row_index_offset + row_index
+            category = categories[row_index]
 
             if normalized_text == "":
                 # Blank values do not need embeddings, but they still need to preserve
@@ -98,9 +108,10 @@ class SemanticDeduplicator:
                 is_duplicate, match = self._handle_blank_text(
                     row_index=global_row_index,
                     text=normalized_text,
+                    category=category,
                 )
             else:
-                pending_rows.append((global_row_index, normalized_text))
+                pending_rows.append((global_row_index, normalized_text, category))
                 if len(pending_rows) >= self.batch_size:
                     self._flush_pending_rows(
                         pending_rows=pending_rows,
@@ -147,11 +158,13 @@ class SemanticDeduplicator:
         self,
         row_index: int,
         text: str,
+        category: object | None,
     ) -> tuple[bool, SemanticDeduplicationMatch | None]:
         if not self._seen_blank:
             self._seen_blank = True
             self._blank_row_index = row_index
             self._blank_text = text
+            self._blank_category = category
             return False, None
 
         return True, SemanticDeduplicationMatch(
@@ -159,6 +172,8 @@ class SemanticDeduplicator:
             duplicate_of_row_index=self._blank_row_index if self._blank_row_index is not None else row_index,
             text=text,
             matched_text=self._blank_text,
+            category=category,
+            matched_category=self._blank_category,
             similarity=1.0,
         )
 
@@ -167,9 +182,10 @@ class SemanticDeduplicator:
         vector,
         row_index: int,
         text: str,
+        category: object | None,
     ) -> tuple[bool, SemanticDeduplicationMatch | None]:
         if self._index is None or self._index.ntotal == 0:
-            self._add_representative(vector, row_index, text)
+            self._add_representative(vector, row_index, text, category)
             return False, None
 
         distances, indices = self._index.search(vector.reshape(1, -1), 1)
@@ -182,17 +198,26 @@ class SemanticDeduplicator:
                 duplicate_of_row_index=self._representative_row_indices[matched_index],
                 text=text,
                 matched_text=self._representative_texts[matched_index],
+                category=category,
+                matched_category=self._representative_categories[matched_index],
                 similarity=similarity,
             )
 
-        self._add_representative(vector, row_index, text)
+        self._add_representative(vector, row_index, text, category)
         return False, None
 
-    def _add_representative(self, vector, row_index: int, text: str) -> None:
+    def _add_representative(
+        self,
+        vector,
+        row_index: int,
+        text: str,
+        category: object | None,
+    ) -> None:
         self._ensure_index(len(vector))
         self._index.add(vector.reshape(1, -1))
         self._representative_row_indices.append(row_index)
         self._representative_texts.append(text)
+        self._representative_categories.append(category)
 
     def _encode_texts(self, texts: list[str]):
         model = self._ensure_model()
@@ -206,7 +231,7 @@ class SemanticDeduplicator:
 
     def _flush_pending_rows(
         self,
-        pending_rows: list[tuple[int, str]],
+        pending_rows: list[tuple[int, str, object | None]],
         keep_mask: list[bool],
         stats: DeduplicationStats,
         matches: list[SemanticDeduplicationMatch],
@@ -219,14 +244,15 @@ class SemanticDeduplicator:
         # a full in-memory embedding matrix in addition to the FAISS index.
         batch_rows = pending_rows.copy()
         pending_rows.clear()
-        texts = [text for _, text in batch_rows]
+        texts = [text for _, text, _ in batch_rows]
         vectors = self._encode_texts(texts)
 
-        for (row_index, text), vector in zip(batch_rows, vectors, strict=True):
+        for (row_index, text, category), vector in zip(batch_rows, vectors, strict=True):
             is_duplicate, match = self._handle_vector(
                 vector=vector,
                 row_index=row_index,
                 text=text,
+                category=category,
             )
             self._record_row_result(
                 is_duplicate=is_duplicate,

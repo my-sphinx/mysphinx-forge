@@ -95,6 +95,9 @@ def build_match_frame(match_rows: list["SemanticDeduplicationMatch"]) -> pd.Data
                 "duplicate_of_row_index": match.duplicate_of_row_index,
                 "text": match.text,
                 "matched_text": match.matched_text,
+                "category": match.category,
+                "matched_category": match.matched_category,
+                "same_category": match.category == match.matched_category,
                 "similarity": match.similarity,
             }
             for match in match_rows
