@@ -1,5 +1,0 @@
-﻿text,domain,frequency,quality_score,cluster_id,original_index,importance,label
-修改收获地址,securities,1,0.36,0,4,低频,
-我有哪些持仓？,securities,1,0.7335714285714285,1,2,低频,
-我的账户里还有多少钱？,securities,1,0.5863636363636364,1,1,低频,
-你好，我想调整一下账户佣金，目前资金主要做短线和ETF,ecurities,1,0.36,0,4,低频,
