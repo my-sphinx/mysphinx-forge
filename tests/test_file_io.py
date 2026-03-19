@@ -5,6 +5,7 @@ import pytest
 
 from data_process.file_io import (
     append_dataframe_chunk,
+    build_match_frame,
     count_csv_rows,
     iter_dataframes,
     load_dataframe,
@@ -104,3 +105,86 @@ def test_write_match_rows_supports_append_mode(tmp_path) -> None:
     assert written["category"].tolist() == ["售后", "发票"]
     assert written["matched_category"].tolist() == ["售后", "财务"]
     assert written["same_category"].tolist() == [True, False]
+
+
+def test_write_match_rows_uses_dynamic_category_column_names(tmp_path) -> None:
+    output_file = tmp_path / "matches.csv"
+    match_rows = [
+        SemanticDeduplicationMatch(
+            row_index=1,
+            duplicate_of_row_index=0,
+            text="怎么申请退款",
+            matched_text="退款怎么申请",
+            category="售后",
+            matched_category="售后",
+            similarity=0.95,
+        )
+    ]
+
+    write_match_rows(match_rows, output_file, category_column="label")
+
+    written = pd.read_csv(output_file)
+    assert written.columns.tolist() == [
+        "row_index",
+        "duplicate_of_row_index",
+        "text",
+        "matched_text",
+        "label",
+        "matched_label",
+        "same_label",
+        "similarity",
+    ]
+    assert written["label"].tolist() == ["售后"]
+    assert written["matched_label"].tolist() == ["售后"]
+    assert written["same_label"].tolist() == [True]
+
+
+def test_build_match_frame_omits_category_columns_when_all_categories_missing() -> None:
+    match_rows = [
+        SemanticDeduplicationMatch(
+            row_index=1,
+            duplicate_of_row_index=0,
+            text="怎么申请退款",
+            matched_text="退款怎么申请",
+            category=None,
+            matched_category=None,
+            similarity=0.95,
+        )
+    ]
+
+    written = build_match_frame(match_rows)
+
+    assert written.columns.tolist() == [
+        "row_index",
+        "duplicate_of_row_index",
+        "text",
+        "matched_text",
+        "similarity",
+    ]
+
+
+def test_build_match_frame_uses_dynamic_category_column_names() -> None:
+    match_rows = [
+        SemanticDeduplicationMatch(
+            row_index=1,
+            duplicate_of_row_index=0,
+            text="怎么申请退款",
+            matched_text="退款怎么申请",
+            category="售后",
+            matched_category="售后",
+            similarity=0.95,
+        )
+    ]
+
+    written = build_match_frame(match_rows, category_column="label")
+
+    assert written.columns.tolist() == [
+        "row_index",
+        "duplicate_of_row_index",
+        "text",
+        "matched_text",
+        "label",
+        "matched_label",
+        "same_label",
+        "similarity",
+    ]

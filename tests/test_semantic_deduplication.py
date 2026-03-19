@@ -125,6 +125,36 @@ def test_semantic_deduplicate_dataframe_removes_semantic_duplicates() -> None:
     assert matches[1].matched_category == "财务"
 
 
+def test_semantic_deduplicate_dataframe_uses_custom_category_column() -> None:
+    dataframe = pd.DataFrame(
+        {
+            "text": ["退款怎么申请", "怎么申请退款"],
+            "label": ["售后", "售后-重复"],
+        }
+    )
+    vector_map = {
+        "退款怎么申请": [1.0, 0.0],
+        "怎么申请退款": [0.99, 0.01],
+    }
+    deduplicator = SemanticDeduplicator(
+        model_path="models/m3e-base",
+        threshold=0.95,
+        model=FakeModel(vector_map),
+        index=FakeFaissIndex(2),
+    )
+
+    deduplicated, stats, matches = deduplicator.deduplicate_dataframe(
+        dataframe,
+        category_column="label",
+        collect_matches=True,
+    )
+
+    assert deduplicated["text"].tolist() == ["退款怎么申请"]
+    assert stats.duplicate_rows == 1
+    assert matches[0].category == "售后-重复"
+    assert matches[0].matched_category == "售后"
+
+
 def test_semantic_deduplicate_dataframe_tracks_blank_duplicates() -> None:
     dataframe = pd.DataFrame({"text": ["", " ", "有效内容"]})
     vector_map = {"有效内容": [1.0, 0.0]}

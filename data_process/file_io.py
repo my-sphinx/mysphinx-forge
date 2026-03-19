@@ -73,13 +73,14 @@ def write_match_rows(
     match_rows: list["SemanticDeduplicationMatch"],
     output_path: str | Path,
     *,
+    category_column: str = "category",
     append: bool = False,
 ) -> None:
     if not match_rows:
         return
 
     path = Path(output_path)
-    build_match_frame(match_rows).to_csv(
+    build_match_frame(match_rows, category_column=category_column).to_csv(
         path,
         mode="a" if append else "w",
         index=False,
@@ -87,19 +88,29 @@ def write_match_rows(
     )
 
 
-def build_match_frame(match_rows: list["SemanticDeduplicationMatch"]) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "row_index": match.row_index,
-                "duplicate_of_row_index": match.duplicate_of_row_index,
-                "text": match.text,
-                "matched_text": match.matched_text,
-                "category": match.category,
-                "matched_category": match.matched_category,
-                "same_category": match.category == match.matched_category,
-                "similarity": match.similarity,
-            }
-            for match in match_rows
-        ]
+def build_match_frame(
+    match_rows: list["SemanticDeduplicationMatch"],
+    *,
+    category_column: str = "category",
+) -> pd.DataFrame:
+    include_category_columns = any(
+        match.category is not None or match.matched_category is not None for match in match_rows
     )
+    matched_category_column = f"matched_{category_column}"
+    same_category_column = f"same_{category_column}"
+    rows: list[dict[str, object]] = []
+    for match in match_rows:
+        row = {
+            "row_index": match.row_index,
+            "duplicate_of_row_index": match.duplicate_of_row_index,
+            "text": match.text,
+            "matched_text": match.matched_text,
+        }
+        if include_category_columns:
+            row[category_column] = match.category
+            row[matched_category_column] = match.matched_category
+            row[same_category_column] = match.category == match.matched_category
+        row["similarity"] = match.similarity
+        rows.append(row)
+
+    return pd.DataFrame(rows)

@@ -65,6 +65,7 @@ class SemanticDeduplicator:
         self,
         dataframe: pd.DataFrame,
         target_column: str = "text",
+        category_column: str = "category",
         progress_callback: Callable[[int], None] | None = None,
         report_every: int = 1_000,
         row_index_offset: int = 0,
@@ -73,8 +74,8 @@ class SemanticDeduplicator:
         resolved_target_column = resolve_target_column(dataframe, target_column)
         normalized_texts = [normalize_dedup_text(value) for value in dataframe[resolved_target_column].tolist()]
         categories = (
-            dataframe["category"].tolist()
-            if "category" in dataframe.columns
+            dataframe[category_column].tolist()
+            if category_column in dataframe.columns
             else [None] * len(dataframe)
         )
 
@@ -299,6 +300,7 @@ class SemanticDeduplicator:
 def semantic_deduplicate_dataframe(
     dataframe: pd.DataFrame,
     target_column: str = "text",
+    category_column: str = "category",
     threshold: float = 0.9,
     model_path: str | Path = DEFAULT_EMBEDDING_MODEL_PATH,
     batch_size: int = 64,
@@ -320,6 +322,7 @@ def semantic_deduplicate_dataframe(
     return active_deduplicator.deduplicate_dataframe(
         dataframe,
         target_column=target_column,
+        category_column=category_column,
         progress_callback=progress_callback,
         report_every=report_every,
         row_index_offset=row_index_offset,

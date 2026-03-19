@@ -62,6 +62,11 @@ def main() -> int:
         help="指定执行处理的目标列名，默认 text。",
     )
     parser.add_argument(
+        "--category-column",
+        default="category",
+        help="指定语义去重分类列名。仅影响 *_matches.csv 中 category 相关导出，默认 category。",
+    )
+    parser.add_argument(
         "--dedupe-mode",
         choices=["exact", "semantic"],
         default="exact",
@@ -122,6 +127,7 @@ def main() -> int:
             args.output,
             args.chunk_size,
             args.target_column,
+            args.category_column,
             args.dedupe_mode,
             args.semantic_threshold,
             args.embedding_model_path,
@@ -135,6 +141,7 @@ def main() -> int:
             args.output,
             args.chunk_size,
             args.target_column,
+            args.category_column,
             args.dedupe_mode,
             args.semantic_threshold,
             args.embedding_model_path,
@@ -228,6 +235,7 @@ def _run_deduplicate(
     output_arg: str | None,
     chunk_size: int,
     target_column: str,
+    category_column: str,
     dedupe_mode: str,
     semantic_threshold: float,
     embedding_model_path: str,
@@ -261,6 +269,7 @@ def _run_deduplicate(
                 output_path,
                 chunk_size,
                 target_column,
+                category_column,
                 logger,
                 dedupe_mode,
                 semantic_deduplicator,
@@ -276,6 +285,7 @@ def _run_deduplicate(
             parameters=_build_deduplication_parameters(
                 chunk_size=chunk_size,
                 target_column=target_column,
+                category_column=category_column,
                 dedupe_mode=dedupe_mode,
                 semantic_threshold=semantic_threshold,
                 embedding_model_path=embedding_model_path,
@@ -298,6 +308,7 @@ def _run_deduplicate(
             deduplicated, stats, match_rows = _deduplicate_dataframe(
                 dataframe=dataframe,
                 target_column=target_column,
+                category_column=category_column,
                 dedupe_mode=dedupe_mode,
                 semantic_deduplicator=semantic_deduplicator,
                 progress_callback=progress_bar.advance,
@@ -324,7 +335,11 @@ def _run_deduplicate(
 
     run_stage("写出结果", logger=logger)
     write_dataframe(deduplicated, output_path)
-    write_match_rows(match_rows, _resolve_match_output_path(output_path))
+    write_match_rows(
+        match_rows,
+        _resolve_match_output_path(output_path),
+        category_column=category_column,
+    )
     _write_meta(
         output_path=output_path,
         action="deduplicate",
@@ -332,6 +347,7 @@ def _run_deduplicate(
         parameters=_build_deduplication_parameters(
             chunk_size=chunk_size,
             target_column=target_column,
+            category_column=category_column,
             dedupe_mode=dedupe_mode,
             semantic_threshold=semantic_threshold,
             embedding_model_path=embedding_model_path,
@@ -352,6 +368,7 @@ def _run_clean_deduplicate(
     output_arg: str | None,
     chunk_size: int,
     target_column: str,
+    category_column: str,
     dedupe_mode: str,
     semantic_threshold: float,
     embedding_model_path: str,
@@ -384,6 +401,7 @@ def _run_clean_deduplicate(
             output_path=output_path,
             chunk_size=chunk_size,
             target_column=target_column,
+            category_column=category_column,
             dedupe_mode=dedupe_mode,
             semantic_deduplicator=semantic_deduplicator,
             logger=logger,
@@ -416,6 +434,7 @@ def _run_clean_deduplicate(
             deduplicated, dedupe_stats, match_rows = _deduplicate_dataframe(
                 dataframe=cleaned,
                 target_column=target_column,
+                category_column=category_column,
                 dedupe_mode=dedupe_mode,
                 semantic_deduplicator=semantic_deduplicator,
                 progress_callback=dedupe_bar.advance,
@@ -442,7 +461,11 @@ def _run_clean_deduplicate(
 
     run_stage("写出结果", logger=logger)
     write_dataframe(deduplicated, output_path)
-    write_match_rows(match_rows, _resolve_match_output_path(output_path))
+    write_match_rows(
+        match_rows,
+        _resolve_match_output_path(output_path),
+        category_column=category_column,
+    )
     _write_meta(
         output_path=output_path,
         action="clean-deduplicate",
@@ -450,6 +473,7 @@ def _run_clean_deduplicate(
         parameters={
             "chunk_size": chunk_size,
             "target_column": target_column,
+            "category_column": category_column,
             "dedupe_mode": dedupe_mode,
             "semantic_threshold": semantic_threshold,
             "embedding_model_path": embedding_model_path,
@@ -536,6 +560,7 @@ def _run_deduplicate_csv_stream(
     output_path: Path,
     chunk_size: int,
     target_column: str,
+    category_column: str,
     logger: Logger,
     dedupe_mode: str,
     semantic_deduplicator: SemanticDeduplicator | None,
@@ -572,6 +597,7 @@ def _run_deduplicate_csv_stream(
             deduplicated_chunk, chunk_stats, chunk_match_rows = _deduplicate_dataframe(
                 dataframe=chunk,
                 target_column=target_column,
+                category_column=category_column,
                 dedupe_mode=dedupe_mode,
                 seen_keys=seen_keys,
                 semantic_deduplicator=semantic_deduplicator,
@@ -589,7 +615,12 @@ def _run_deduplicate_csv_stream(
             total_stats.embedding_model_path = chunk_stats.embedding_model_path
             # Keep semantic audit rows on disk while streaming so duplicate-heavy
             # datasets do not accumulate a second large in-memory result set.
-            write_match_rows(chunk_match_rows, match_output_path, append=True)
+            write_match_rows(
+                chunk_match_rows,
+                match_output_path,
+                category_column=category_column,
+                append=True,
+            )
             wrote_header = append_dataframe_chunk(
                 deduplicated_chunk,
                 output_path,
@@ -616,6 +647,7 @@ def _run_clean_deduplicate_csv(
     output_path: Path,
     chunk_size: int,
     target_column: str,
+    category_column: str,
     dedupe_mode: str,
     semantic_deduplicator: SemanticDeduplicator | None,
     logger: Logger,
@@ -642,6 +674,7 @@ def _run_clean_deduplicate_csv(
             output_path=output_path,
             chunk_size=chunk_size,
             target_column=target_column,
+            category_column=category_column,
             logger=logger,
             dedupe_mode=dedupe_mode,
             semantic_deduplicator=semantic_deduplicator,
@@ -653,6 +686,7 @@ def _run_clean_deduplicate_csv(
             parameters=_build_deduplication_parameters(
                 chunk_size=chunk_size,
                 target_column=target_column,
+                category_column=category_column,
                 dedupe_mode=dedupe_mode,
                 semantic_threshold=semantic_deduplicator.threshold if semantic_deduplicator else None,
                 embedding_model_path=(
@@ -793,6 +827,7 @@ def _write_meta(
 def _build_deduplication_parameters(
     chunk_size: int,
     target_column: str,
+    category_column: str,
     dedupe_mode: str,
     semantic_threshold: float | None,
     embedding_model_path: str | None,
@@ -803,6 +838,7 @@ def _build_deduplication_parameters(
     return {
         "chunk_size": chunk_size,
         "target_column": target_column,
+        "category_column": category_column,
         "dedupe_mode": dedupe_mode,
         "semantic_threshold": semantic_threshold,
         "embedding_model_path": embedding_model_path,
@@ -835,6 +871,7 @@ def _build_semantic_deduplicator(
 def _deduplicate_dataframe(
     dataframe: pd.DataFrame,
     target_column: str,
+    category_column: str,
     dedupe_mode: str,
     progress_callback=None,
     seen_keys: set[str] | None = None,
@@ -845,6 +882,7 @@ def _deduplicate_dataframe(
         return semantic_deduplicate_dataframe(
             dataframe,
             target_column=target_column,
+            category_column=category_column,
             progress_callback=progress_callback,
             row_index_offset=row_index_offset,
             deduplicator=semantic_deduplicator,

@@ -56,6 +56,12 @@ uv run python main.py --action deduplicate --input-file <输入文件路径>
 uv run python main.py --action deduplicate --input-file <输入文件路径> --dedupe-mode semantic
 ```
 
+指定语义分类列：
+
+```bash
+uv run python main.py --action deduplicate --input-file <输入文件路径> --dedupe-mode semantic --category-column label
+```
+
 先清洗再去重：
 
 ```bash
@@ -96,6 +102,7 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 | `--chunk-size` | 否 | 指定 `csv` 分块流式处理时每块读取的行数。仅对 `csv` 生效，`Excel` 会忽略该参数。 | 大于 `0` 的整数，默认 `50000` |
 | `--target-column` | 否 | 指定执行清洗或去重判断的目标列名。程序只根据这一列内容决定是否删除整行，其它列会随该行一并保留或删除。未显式传入时，会按候选列顺序自动探测。 | 任意存在于输入文件中的列名；默认按 `text -> 用户问题 -> 客户问题 -> 用户输入` 自动探测 |
 | `--dedupe-mode` | 否 | 指定去重模式。`exact` 为标准化后精确匹配，`semantic` 为基于向量相似度的语义去重。仅对 `deduplicate` 生效。 | `exact`、`semantic`，默认 `exact` |
+| `--category-column` | 否 | 指定语义去重时用于导出分类相关字段的来源列名。比如传 `label` 时，`*_matches.csv` 会导出 `label` / `matched_label` / `same_label`。输入文件没有该列时，不会导出这三列。 | 任意列名，默认 `category` |
 | `--semantic-threshold` | 否 | 指定语义去重阈值。仅对 `--dedupe-mode semantic` 生效。阈值越高，判重越保守。 | `0` 到 `1` 之间的小数，默认 `0.9` |
 | `--embedding-model-path` | 否 | 指定语义去重使用的本地 embedding 模型目录。仅对 `--dedupe-mode semantic` 生效。 | 合法本地模型目录路径，默认 `models/m3e-base` |
 | `--batch-size` | 否 | 指定语义去重时 embedding 编码批大小。仅对 `--dedupe-mode semantic` 生效。 | 大于 `0` 的整数，默认 `64` |
@@ -113,6 +120,7 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 | 使用默认输出文件名执行去重 | `uv run python main.py --action deduplicate --input-file data.csv` |
 | 指定去重目标列执行去重 | `uv run python main.py --action deduplicate --input-file data.xlsx --target-column 用户问题` |
 | 使用语义去重 | `uv run python main.py --action deduplicate --input-file data.csv --dedupe-mode semantic` |
+| 指定语义分类列 | `uv run python main.py --action deduplicate --input-file data.csv --dedupe-mode semantic --category-column label` |
 | 指定语义模型路径和阈值 | `uv run python main.py --action deduplicate --input-file data.csv --dedupe-mode semantic --embedding-model-path models/m3e-base --semantic-threshold 0.9` |
 | 指定近似语义索引 | `uv run python main.py --action deduplicate --input-file data.csv --dedupe-mode semantic --semantic-index-type hnsw --semantic-hnsw-m 32` |
 | 先清洗再去重 | `uv run python main.py --action clean-deduplicate --input-file data.csv` |
@@ -181,6 +189,8 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 - 默认索引类型为 `flat`，即精确内积检索；如果更关注大规模性能，可以切换为 `hnsw` 近似检索。
 - 默认模型路径为 `models/m3e-base`。你当前仓库里可以直接通过软链接访问本地模型。
 - `semantic` 模式会额外生成 `*_matches.csv`，用于审计每条被删除文本命中了哪条代表文本，以及对应的相似度分数。
+- `*_matches.csv` 中的分类相关列名会跟 `--category-column` 动态联动。默认读取输入里的 `category` 列，并导出 `category` / `matched_category` / `same_category`；如果你的输入使用 `label`，则可通过 `--category-column label` 导出 `label` / `matched_label` / `same_label`。
+- 如果输入里不存在指定的分类列，`*_matches.csv` 会只保留基础字段，不输出分类相关列。
 - `csv` 路径会按块读取、按批生成 embedding，并将 `*_matches.csv` 命中明细按块追加写盘，避免一次性堆积全量向量和命中明细。
 - 即便如此，内存中仍会保留代表文本向量索引；数据越多、代表文本越多，内存占用也会随之增长。
 

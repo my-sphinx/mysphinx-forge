@@ -444,6 +444,7 @@ def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys
     def fake_semantic_deduplicate_dataframe(
         dataframe,
         target_column="text",
+        category_column="category",
         threshold=0.9,
         model_path="models/m3e-base",
         batch_size=64,
@@ -526,6 +527,208 @@ def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys
     assert meta["parameters"]["semantic_hnsw_m"] == 32
 
 
+def test_main_supports_custom_category_column_for_semantic_deduplicate(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame(
+        {
+            "text": ["退款怎么申请", "怎么申请退款", "发票怎么开"],
+            "label": ["售后", "售后-重复", "财务"],
+        }
+    ).to_csv(input_file, index=False)
+
+    class FakeSemanticDeduplicator:
+        def __init__(
+            self,
+            model_path: str,
+            threshold: float,
+            batch_size: int,
+            index_type: str = "flat",
+            hnsw_m: int = 32,
+        ) -> None:
+            self.model_path = model_path
+            self.threshold = threshold
+            self.batch_size = batch_size
+            self.index_type = index_type
+            self.hnsw_m = hnsw_m
+
+    def fake_semantic_deduplicate_dataframe(
+        dataframe,
+        target_column="text",
+        category_column="category",
+        threshold=0.9,
+        model_path="models/m3e-base",
+        batch_size=64,
+        progress_callback=None,
+        report_every=1_000,
+        row_index_offset=0,
+        collect_matches=False,
+        deduplicator=None,
+    ):
+        assert category_column == "label"
+        if progress_callback:
+            progress_callback(len(dataframe))
+        stats = DeduplicationStats(
+            total_before=3,
+            total_after=2,
+            duplicate_rows=1,
+            unique_values=2,
+            target_column=target_column,
+            dedupe_mode="semantic",
+            semantic_threshold=deduplicator.threshold,
+            embedding_model_path=deduplicator.model_path,
+        )
+        matches = [
+            SemanticDeduplicationMatch(
+                row_index=row_index_offset + 1,
+                duplicate_of_row_index=row_index_offset,
+                text="怎么申请退款",
+                matched_text="退款怎么申请",
+                category="售后-重复",
+                matched_category="售后",
+                similarity=0.96,
+            )
+        ]
+        return dataframe.iloc[[0, 2]].reset_index(drop=True), stats, matches
+
+    monkeypatch.setattr(cli, "SemanticDeduplicator", FakeSemanticDeduplicator)
+    monkeypatch.setattr(cli, "semantic_deduplicate_dataframe", fake_semantic_deduplicate_dataframe)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "deduplicate",
+            "--input-file",
+            str(input_file),
+            "--dedupe-mode",
+            "semantic",
+            "--category-column",
+            "label",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    match_file = tmp_path / "input_deduplicated_matches.csv"
+    meta = json.loads((tmp_path / "input_deduplicated.meta.json").read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert "去重完成" in captured.out
+    assert match_file.exists()
+    match_rows = pd.read_csv(match_file)
+    assert match_rows.columns.tolist() == [
+        "row_index",
+        "duplicate_of_row_index",
+        "text",
+        "matched_text",
+        "label",
+        "matched_label",
+        "same_label",
+        "similarity",
+    ]
+    assert match_rows["label"].tolist() == ["售后-重复"]
+    assert match_rows["matched_label"].tolist() == ["售后"]
+    assert match_rows["same_label"].tolist() == [False]
+    assert meta["parameters"]["category_column"] == "label"
+
+
+def test_main_omits_category_columns_when_semantic_input_has_no_category_column(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame(
+        {
+            "text": ["退款怎么申请", "怎么申请退款"],
+        }
+    ).to_csv(input_file, index=False)
+
+    class FakeSemanticDeduplicator:
+        def __init__(
+            self,
+            model_path: str,
+            threshold: float,
+            batch_size: int,
+            index_type: str = "flat",
+            hnsw_m: int = 32,
+        ) -> None:
+            self.model_path = model_path
+            self.threshold = threshold
+            self.batch_size = batch_size
+            self.index_type = index_type
+            self.hnsw_m = hnsw_m
+
+    def fake_semantic_deduplicate_dataframe(
+        dataframe,
+        target_column="text",
+        category_column="category",
+        threshold=0.9,
+        model_path="models/m3e-base",
+        batch_size=64,
+        progress_callback=None,
+        report_every=1_000,
+        row_index_offset=0,
+        collect_matches=False,
+        deduplicator=None,
+    ):
+        if progress_callback:
+            progress_callback(len(dataframe))
+        stats = DeduplicationStats(
+            total_before=2,
+            total_after=1,
+            duplicate_rows=1,
+            unique_values=1,
+            target_column=target_column,
+            dedupe_mode="semantic",
+            semantic_threshold=deduplicator.threshold,
+            embedding_model_path=deduplicator.model_path,
+        )
+        matches = [
+            SemanticDeduplicationMatch(
+                row_index=row_index_offset + 1,
+                duplicate_of_row_index=row_index_offset,
+                text="怎么申请退款",
+                matched_text="退款怎么申请",
+                category=None,
+                matched_category=None,
+                similarity=0.96,
+            )
+        ]
+        return dataframe.iloc[[0]].reset_index(drop=True), stats, matches
+
+    monkeypatch.setattr(cli, "SemanticDeduplicator", FakeSemanticDeduplicator)
+    monkeypatch.setattr(cli, "semantic_deduplicate_dataframe", fake_semantic_deduplicate_dataframe)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "deduplicate",
+            "--input-file",
+            str(input_file),
+            "--dedupe-mode",
+            "semantic",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    match_rows = pd.read_csv(tmp_path / "input_deduplicated_matches.csv")
+
+    assert exit_code == 0
+    assert "去重完成" in captured.out
+    assert match_rows.columns.tolist() == [
+        "row_index",
+        "duplicate_of_row_index",
+        "text",
+        "matched_text",
+        "similarity",
+    ]
+
+
 def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -> None:
     input_file = tmp_path / "input.csv"
     pd.DataFrame(
@@ -555,6 +758,7 @@ def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -
     def fake_semantic_deduplicate_dataframe(
         dataframe,
         target_column="text",
+        category_column="category",
         threshold=0.9,
         model_path="models/m3e-base",
         batch_size=64,
@@ -632,6 +836,113 @@ def test_main_supports_clean_deduplicate_action(tmp_path, monkeypatch, capsys) -
     assert meta["match_file"] == str(match_file)
     assert meta["parameters"]["semantic_index_type"] == "flat"
     assert meta["parameters"]["semantic_hnsw_m"] == 32
+
+
+def test_main_supports_custom_category_column_for_clean_deduplicate(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame(
+        {
+            "text": ["!!!", "退款怎么申请", "怎么申请退款"],
+            "label": ["噪声", "售后", "售后-重复"],
+        }
+    ).to_csv(input_file, index=False)
+
+    class FakeSemanticDeduplicator:
+        def __init__(
+            self,
+            model_path: str,
+            threshold: float,
+            batch_size: int,
+            index_type: str = "flat",
+            hnsw_m: int = 32,
+        ) -> None:
+            self.model_path = model_path
+            self.threshold = threshold
+            self.batch_size = batch_size
+            self.index_type = index_type
+            self.hnsw_m = hnsw_m
+
+    def fake_semantic_deduplicate_dataframe(
+        dataframe,
+        target_column="text",
+        category_column="category",
+        threshold=0.9,
+        model_path="models/m3e-base",
+        batch_size=64,
+        progress_callback=None,
+        report_every=1_000,
+        row_index_offset=0,
+        collect_matches=False,
+        deduplicator=None,
+    ):
+        assert category_column == "label"
+        if progress_callback:
+            progress_callback(len(dataframe))
+        stats = DeduplicationStats(
+            total_before=2,
+            total_after=1,
+            duplicate_rows=1,
+            unique_values=1,
+            target_column=target_column,
+            dedupe_mode="semantic",
+            semantic_threshold=deduplicator.threshold,
+            embedding_model_path=deduplicator.model_path,
+        )
+        matches = [
+            SemanticDeduplicationMatch(
+                row_index=row_index_offset + 1,
+                duplicate_of_row_index=row_index_offset,
+                text="怎么申请退款",
+                matched_text="退款怎么申请",
+                category="售后-重复",
+                matched_category="售后",
+                similarity=0.96,
+            )
+        ]
+        return dataframe.iloc[[0]].reset_index(drop=True), stats, matches
+
+    monkeypatch.setattr(cli, "SemanticDeduplicator", FakeSemanticDeduplicator)
+    monkeypatch.setattr(cli, "semantic_deduplicate_dataframe", fake_semantic_deduplicate_dataframe)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "clean-deduplicate",
+            "--input-file",
+            str(input_file),
+            "--dedupe-mode",
+            "semantic",
+            "--category-column",
+            "label",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    match_file = tmp_path / "input_deduplicated_matches.csv"
+    meta = json.loads((tmp_path / "input_deduplicated.meta.json").read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert "清洗完成" in captured.out
+    assert match_file.exists()
+    match_rows = pd.read_csv(match_file)
+    assert match_rows.columns.tolist() == [
+        "row_index",
+        "duplicate_of_row_index",
+        "text",
+        "matched_text",
+        "label",
+        "matched_label",
+        "same_label",
+        "similarity",
+    ]
+    assert match_rows["matched_label"].tolist() == ["售后"]
+    assert match_rows["same_label"].tolist() == [False]
+    assert meta["parameters"]["category_column"] == "label"
 
 
 def test_main_rejects_invalid_semantic_threshold(monkeypatch, capsys) -> None:
