@@ -7,6 +7,7 @@ import pandas as pd
 
 from data_process import cli
 from data_process.cli import main
+from data_process.clustering import ClusteringStats
 from data_process.deduplication import DeduplicationStats
 from data_process.semantic_deduplication import SemanticDeduplicationMatch
 
@@ -525,6 +526,133 @@ def test_main_supports_semantic_deduplicate_action(tmp_path, monkeypatch, capsys
     assert meta["match_file"] == str(match_file)
     assert meta["parameters"]["semantic_index_type"] == "flat"
     assert meta["parameters"]["semantic_hnsw_m"] == 32
+
+
+def test_main_supports_cluster_action(tmp_path, monkeypatch, capsys) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame(
+        {
+            "text": ["退款怎么申请", "怎么申请退款", "我要开发票", ""],
+            "category": ["售后", "售后-重复", "财务", "空白"],
+        }
+    ).to_csv(input_file, index=False)
+
+    class FakeTextClusterer:
+        def __init__(
+            self,
+            model_path: str,
+            cluster_mode: str,
+            batch_size: int,
+            min_cluster_size: int,
+            num_clusters: int,
+            cluster_selection_epsilon: float,
+        ) -> None:
+            self.model_path = model_path
+            self.cluster_mode = cluster_mode
+            self.batch_size = batch_size
+            self.min_cluster_size = min_cluster_size
+            self.num_clusters = num_clusters
+            self.cluster_selection_epsilon = cluster_selection_epsilon
+
+        def cluster_dataframe(self, dataframe, target_column="text", progress_callback=None):
+            if progress_callback:
+                progress_callback(len(dataframe))
+            clustered = dataframe.copy()
+            clustered["cluster_id"] = [0, 0, 1, -1]
+            clustered["is_noise"] = [False, False, False, True]
+            clustered["cluster_size"] = [2, 2, 1, 1]
+            clustered["cluster_representative_text"] = [
+                "退款怎么申请",
+                "退款怎么申请",
+                "我要开发票",
+                "",
+            ]
+            summary = pd.DataFrame(
+                {
+                    "cluster_id": [0, 1],
+                    "cluster_size": [2, 1],
+                    "cluster_label": ["退款怎么申请", "我要开发票"],
+                    "top_keywords": ["申请, 退款", "发票, 开发"],
+                    "representative_text": ["退款怎么申请", "我要开发票"],
+                    "example_texts": ["退款怎么申请 | 怎么申请退款", "我要开发票"],
+                }
+            )
+            projection = pd.DataFrame(
+                {
+                    "row_index": [0, 1, 2, 3],
+                    target_column: ["退款怎么申请", "怎么申请退款", "我要开发票", ""],
+                    "cluster_id": [0, 0, 1, -1],
+                    "is_noise": [False, False, False, True],
+                    "x": [0.1, 0.2, 0.9, float("nan")],
+                    "y": [0.3, 0.4, 0.8, float("nan")],
+                }
+            )
+            stats = ClusteringStats(
+                total_before=4,
+                total_clustered=3,
+                cluster_count=2,
+                noise_rows=1,
+                largest_cluster_size=2,
+                smallest_cluster_size=1,
+                average_cluster_size=1.5,
+                target_column=target_column,
+                cluster_mode=self.cluster_mode,
+                embedding_model_path=self.model_path,
+            )
+            return clustered, summary, projection, stats
+
+    monkeypatch.setattr(cli, "TextClusterer", FakeTextClusterer)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "cluster",
+            "--input-file",
+            str(input_file),
+            "--cluster-mode",
+            "hdbscan",
+            "--min-cluster-size",
+            "2",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    output_file = tmp_path / "input_clustered.csv"
+    cluster_summary_file = tmp_path / "input_clustered_clusters.csv"
+    projection_file = tmp_path / "input_clustered_projection.csv"
+    analysis_file = tmp_path / "input_clustered_analysis.csv"
+    html_report_file = tmp_path / "input_clustered_report.html"
+    meta_file = tmp_path / "input_clustered.meta.json"
+
+    assert exit_code == 0
+    assert "聚类完成" in captured.out
+    assert "聚类模式：hdbscan" in captured.out
+    assert "聚类簇数量：2" in captured.out
+    assert "执行聚类" in captured.err
+    assert output_file.exists()
+    assert cluster_summary_file.exists()
+    assert projection_file.exists()
+    assert analysis_file.exists()
+    assert html_report_file.exists()
+    clustered = pd.read_csv(output_file)
+    assert clustered["cluster_id"].tolist() == [0, 0, 1, -1]
+    cluster_summary = pd.read_csv(cluster_summary_file)
+    assert cluster_summary["cluster_id"].tolist() == [0, 1]
+    projection = pd.read_csv(projection_file)
+    assert projection["cluster_id"].tolist() == [0, 0, 1, -1]
+    analysis = pd.read_csv(analysis_file)
+    assert analysis["cluster_rank"].tolist() == [1, 2]
+    assert "Cluster Report" in html_report_file.read_text(encoding="utf-8")
+    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert meta["action"] == "cluster"
+    assert meta["clustering_stats"]["cluster_mode"] == "hdbscan"
+    assert meta["cluster_summary_file"] == str(cluster_summary_file)
+    assert meta["projection_file"] == str(projection_file)
+    assert meta["analysis_file"] == str(analysis_file)
+    assert meta["html_report_file"] == str(html_report_file)
 
 
 def test_main_supports_custom_category_column_for_semantic_deduplicate(

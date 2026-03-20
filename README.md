@@ -1,8 +1,8 @@
 # data-process
 
-一个逐步演进的数据处理工具仓库。当前已实现 `数据清洗`、`数据去重`，以及显式流水线 `先清洗再去重`。
+一个逐步演进的数据处理工具仓库。当前已实现 `数据清洗`、`数据去重`、`语义聚类`，以及显式流水线 `先清洗再去重`。
 
-执行清洗或去重时，终端会通过 `tqdm` 实时显示多阶段进度条；任务完成后会继续输出最终统计信息。`csv` 默认展示 `统计总行数 -> 分块处理 -> 写出结果`，`Excel` 展示 `读取文件 -> 执行处理 -> 写出结果`。清洗阶段完成时，进度条尾部会附带 `总数 / 删除 / 保留` 摘要，以及 `空行 / 符号 / 表情 / 乱码` 的删除分布；去重阶段会展示 `总数 / 重复 / 保留 / 唯一值` 摘要。每次运行还会在输出文件同目录生成统一日志文件 `data-process.log`，写入阶段日志、错误信息和最终统计；同时会为每个结果文件生成对应的 `*.meta.json` 元数据文件。
+执行清洗、去重或聚类时，终端会通过 `tqdm` 实时显示多阶段进度条；任务完成后会继续输出最终统计信息。`csv` 默认展示 `统计总行数 -> 分块处理 -> 写出结果`，`Excel` 展示 `读取文件 -> 执行处理 -> 写出结果`。清洗阶段完成时，进度条尾部会附带 `总数 / 删除 / 保留` 摘要，以及 `空行 / 符号 / 表情 / 乱码` 的删除分布；去重阶段会展示 `总数 / 重复 / 保留 / 唯一值` 摘要；聚类阶段会展示 `总数 / 簇数 / 噪声 / 入簇` 摘要。每次运行还会在输出文件同目录生成统一日志文件 `data-process.log`，写入阶段日志、错误信息和最终统计；同时会为每个结果文件生成对应的 `*.meta.json` 元数据文件。
 
 ## 模块划分
 
@@ -10,7 +10,10 @@
 - `data_process/cleaning.py`：只负责数据清洗规则与清洗统计，不再承担读写细节。
 - `data_process/deduplication.py`：负责标准化后的精确去重。
 - `data_process/semantic_deduplication.py`：负责基于 embedding + `faiss` 的语义去重。
+- `data_process/clustering.py`：负责基于 embedding 的 `HDBSCAN` / `KMeans` 文本聚类。
+- `data_process/cluster_reporting.py`：负责聚类分析报表与 HTML 可视化报告生成。
 - `data_process/cli.py`：负责编排命令行参数、阶段流程、日志和元数据写出。
+- `data_process/embedding.py`：集中处理本地 embedding 模型加载与输出抑制。
 
 ## 使用方式
 
@@ -92,11 +95,35 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 uv run python main.py --action deduplicate --input-file <输入文件路径> --dedupe-mode semantic --semantic-index-type hnsw --semantic-hnsw-m 32
 ```
 
+运行语义聚类：
+
+```bash
+uv run python main.py --action cluster --input-file <输入文件路径>
+```
+
+指定聚类列：
+
+```bash
+uv run python main.py --action cluster --input-file <输入文件路径> --target-column 用户问题
+```
+
+使用 `KMeans` 固定簇数聚类：
+
+```bash
+uv run python main.py --action cluster --input-file <输入文件路径> --cluster-mode kmeans --num-clusters 12
+```
+
+调整 `HDBSCAN` 最小簇大小：
+
+```bash
+uv run python main.py --action cluster --input-file <输入文件路径> --cluster-mode hdbscan --min-cluster-size 8
+```
+
 ## 命令行参数
 
 | 参数 | 是否必填 | 说明 | 支持的值 |
 | --- | --- | --- | --- |
-| `--action` | 是 | 指定要执行的功能。当前工具通过该参数选择不同处理动作。 | `clean`、`deduplicate`、`clean-deduplicate` |
+| `--action` | 是 | 指定要执行的功能。当前工具通过该参数选择不同处理动作。 | `clean`、`deduplicate`、`clean-deduplicate`、`cluster` |
 | `--input-file` | 是 | 指定输入文件路径。程序会根据文件扩展名自动识别读取方式。 | 支持 `.csv`、`.xls`、`.xlsx`、`.xlsm` |
 | `-o`, `--output` | 否 | 指定输出文件路径。未提供时，`clean` 默认生成 `*_cleaned` 文件，`deduplicate` 默认生成 `*_deduplicated` 文件。 | 任意合法输出路径，例如 `result.csv`、`result.xlsx` |
 | `--chunk-size` | 否 | 指定 `csv` 分块流式处理时每块读取的行数。仅对 `csv` 生效，`Excel` 会忽略该参数。 | 大于 `0` 的整数，默认 `50000` |
@@ -108,6 +135,10 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 | `--batch-size` | 否 | 指定语义去重时 embedding 编码批大小。仅对 `--dedupe-mode semantic` 生效。 | 大于 `0` 的整数，默认 `64` |
 | `--semantic-index-type` | 否 | 指定语义去重使用的向量索引类型。`flat` 为精确检索，`hnsw` 为近似检索。 | `flat`、`hnsw`，默认 `flat` |
 | `--semantic-hnsw-m` | 否 | 指定 `hnsw` 索引的图连接度参数 `M`。仅对 `--semantic-index-type hnsw` 生效。 | 大于 `0` 的整数，默认 `32` |
+| `--cluster-mode` | 否 | 指定聚类模式。`hdbscan` 为密度聚类，`kmeans` 为固定簇数聚类。仅对 `cluster` 生效。 | `hdbscan`、`kmeans`，默认 `hdbscan` |
+| `--min-cluster-size` | 否 | 指定 `HDBSCAN` 的最小簇大小。仅对 `--cluster-mode hdbscan` 生效。 | 大于 `0` 的整数，默认 `5` |
+| `--num-clusters` | 否 | 指定 `KMeans` 聚类簇数。仅对 `--cluster-mode kmeans` 生效。 | 大于 `0` 的整数，默认 `8` |
+| `--cluster-selection-epsilon` | 否 | 指定 `HDBSCAN` 的 `cluster_selection_epsilon`。值越大，簇边界越宽松。 | 大于等于 `0` 的小数，默认 `0` |
 
 ## 参数示例
 
@@ -125,6 +156,9 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 | 指定近似语义索引 | `uv run python main.py --action deduplicate --input-file data.csv --dedupe-mode semantic --semantic-index-type hnsw --semantic-hnsw-m 32` |
 | 先清洗再去重 | `uv run python main.py --action clean-deduplicate --input-file data.csv` |
 | 先清洗再做语义去重 | `uv run python main.py --action clean-deduplicate --input-file data.csv --dedupe-mode semantic` |
+| 使用默认参数执行聚类 | `uv run python main.py --action cluster --input-file data.csv` |
+| 使用 `KMeans` 固定簇数聚类 | `uv run python main.py --action cluster --input-file data.csv --cluster-mode kmeans --num-clusters 12` |
+| 调整 `HDBSCAN` 最小簇大小 | `uv run python main.py --action cluster --input-file data.csv --cluster-mode hdbscan --min-cluster-size 8` |
 
 ## 输出统计字段说明
 
@@ -160,7 +194,7 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 
 ## 日志文件
 
-每次执行 `clean`、`deduplicate` 或 `clean-deduplicate` 时，程序都会在输出文件同目录生成或追加写入 `data-process.log`。日志会记录：
+每次执行 `clean`、`deduplicate`、`clean-deduplicate` 或 `cluster` 时，程序都会在输出文件同目录生成或追加写入 `data-process.log`。日志会记录：
 
 - 本次执行的 action、输入文件和输出文件
 - 各处理阶段的开始和完成状态
@@ -173,6 +207,7 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 
 - `input_cleaned.csv` 对应 `input_cleaned.meta.json`
 - `input_deduplicated.csv` 对应 `input_deduplicated.meta.json`
+- `input_clustered.csv` 对应 `input_clustered.meta.json`
 
 元数据文件会记录：
 
@@ -181,7 +216,24 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 - 本次运行参数
 - 清洗统计
 - 去重统计
+- 聚类统计
 - 语义去重命中明细文件路径
+- 聚类汇总文件路径
+- 聚类二维投影文件路径
+- 聚类分析报表路径
+- 聚类 HTML 报告路径
+
+## 聚类说明
+
+- 聚类使用本地 embedding 模型生成句向量，默认复用 `models/m3e-base`。
+- 默认聚类模式为 `hdbscan`，适合簇数未知、希望识别噪声点的数据。
+- 可通过 `--cluster-mode kmeans --num-clusters N` 切换为固定簇数聚类。
+- 聚类结果主文件会新增 `cluster_id`、`is_noise`、`cluster_size`、`cluster_representative_text`、`cluster_top_keywords`、`cluster_label` 字段。
+- 聚类还会额外生成 `*_clusters.csv`，用于汇总每个簇的规模、主题标签、关键词、代表文本和示例文本，便于后续分析和可视化。
+- 聚类还会生成 `*_projection.csv`，包含 `row_index`、目标文本、`cluster_id`、`is_noise`、二维坐标 `x/y`，可直接用于散点图可视化。
+- 聚类还会生成 `*_analysis.csv`，按簇输出 `rank / size / ratio / label / keywords / representative_text`，便于表格分析和二次加工。
+- 聚类还会生成 `*_report.html`，内置统计卡片、簇摘要表和二维散点图，并支持按簇筛选、仅看噪声点、点击散点查看原文详情，可直接在浏览器打开查看。
+- 当前聚类会一次性读取文件到内存中执行；相比清洗和去重，它更适合已经过预处理的数据集。
 
 ## 语义去重说明
 
@@ -215,6 +267,7 @@ uv run python main.py --action deduplicate --input-file <输入文件路径> --d
 - 基于目标列做标准化后精确去重
 - 支持基于本地 `m3e-base` + `faiss` 的语义去重
 - 支持通过 `--semantic-index-type` 在精确检索和近似检索之间切换
+- 支持基于本地 embedding 的 `HDBSCAN` / `KMeans` 文本聚类
 - 支持显式流水线 `clean-deduplicate`
 - 去重标准固定为：去首尾空格、压缩连续空白、大小写归一
 - 语义去重可通过 `--semantic-threshold` 调整判重保守程度

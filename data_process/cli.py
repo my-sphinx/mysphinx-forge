@@ -14,6 +14,11 @@ from data_process.cleaning import (
     CleaningStats,
     clean_dataframe,
 )
+from data_process.clustering import ClusteringStats, TextClusterer
+from data_process.cluster_reporting import (
+    build_cluster_analysis_report,
+    render_cluster_report_html,
+)
 from data_process.deduplication import DeduplicationStats, deduplicate_dataframe
 from data_process.file_io import (
     append_dataframe_chunk,
@@ -37,8 +42,8 @@ def main() -> int:
     parser.add_argument(
         "--action",
         required=True,
-        choices=["clean", "deduplicate", "clean-deduplicate"],
-        help="要执行的功能。当前支持 clean、deduplicate、clean-deduplicate。",
+        choices=["clean", "deduplicate", "clean-deduplicate", "cluster"],
+        help="要执行的功能。当前支持 clean、deduplicate、clean-deduplicate、cluster。",
     )
     parser.add_argument(
         "--input-file",
@@ -101,6 +106,30 @@ def main() -> int:
         default=32,
         help="语义索引为 hnsw 时的图连接度参数 M，默认 32。",
     )
+    parser.add_argument(
+        "--cluster-mode",
+        choices=["hdbscan", "kmeans"],
+        default="hdbscan",
+        help="聚类模式。hdbscan 为密度聚类，kmeans 为固定簇数聚类。",
+    )
+    parser.add_argument(
+        "--min-cluster-size",
+        type=int,
+        default=5,
+        help="HDBSCAN 最小簇大小，默认 5。",
+    )
+    parser.add_argument(
+        "--num-clusters",
+        type=int,
+        default=8,
+        help="KMeans 聚类簇数，默认 8。",
+    )
+    parser.add_argument(
+        "--cluster-selection-epsilon",
+        type=float,
+        default=0.0,
+        help="HDBSCAN 的 cluster_selection_epsilon，默认 0。",
+    )
 
     args = parser.parse_args()
     if not args.input_file:
@@ -114,6 +143,15 @@ def main() -> int:
         return 1
     if args.semantic_hnsw_m <= 0:
         print("--semantic-hnsw-m 必须是大于 0 的整数。")
+        return 1
+    if args.min_cluster_size <= 0:
+        print("--min-cluster-size 必须是大于 0 的整数。")
+        return 1
+    if args.num_clusters <= 0:
+        print("--num-clusters 必须是大于 0 的整数。")
+        return 1
+    if args.cluster_selection_epsilon < 0:
+        print("--cluster-selection-epsilon 不能小于 0。")
         return 1
     if not 0 < args.semantic_threshold <= 1:
         print("--semantic-threshold 必须在 0 到 1 之间。")
@@ -148,6 +186,18 @@ def main() -> int:
             args.batch_size,
             args.semantic_index_type,
             args.semantic_hnsw_m,
+        )
+    if args.action == "cluster":
+        return _run_cluster(
+            args.input_file,
+            args.output,
+            args.target_column,
+            args.embedding_model_path,
+            args.batch_size,
+            args.cluster_mode,
+            args.min_cluster_size,
+            args.num_clusters,
+            args.cluster_selection_epsilon,
         )
 
     parser.print_help()
@@ -489,6 +539,116 @@ def _run_clean_deduplicate(
     return 0
 
 
+def _run_cluster(
+    input_file: str,
+    output_arg: str | None,
+    target_column: str,
+    embedding_model_path: str,
+    batch_size: int,
+    cluster_mode: str,
+    min_cluster_size: int,
+    num_clusters: int,
+    cluster_selection_epsilon: float,
+) -> int:
+    input_path = Path(input_file)
+    output_path = _resolve_cluster_output_path(input_path, output_arg)
+    cluster_summary_path = _resolve_cluster_summary_output_path(output_path)
+    projection_path = _resolve_projection_output_path(output_path)
+    analysis_path = _resolve_cluster_analysis_output_path(output_path)
+    html_report_path = _resolve_cluster_report_html_output_path(output_path)
+    logger = configure_logger(_resolve_log_path(output_path))
+    logger.info(
+        "开始执行 action=cluster input=%s output=%s mode=%s",
+        input_path,
+        output_path,
+        cluster_mode,
+    )
+
+    clusterer = TextClusterer(
+        model_path=embedding_model_path,
+        cluster_mode=cluster_mode,
+        batch_size=batch_size,
+        min_cluster_size=min_cluster_size,
+        num_clusters=num_clusters,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+    )
+
+    try:
+        run_stage("读取文件", logger=logger)
+        dataframe = load_dataframe(input_file)
+        progress_bar = ProgressBar(total=len(dataframe), description="执行聚类", logger=logger)
+        try:
+            clustered, cluster_summary, projection, stats = clusterer.cluster_dataframe(
+                dataframe,
+                target_column=target_column,
+                progress_callback=progress_bar.advance,
+            )
+            progress_bar.set_postfix(
+                {
+                    "总数": stats.total_before,
+                    "簇数": stats.cluster_count,
+                    "噪声": stats.noise_rows,
+                    "入簇": stats.total_clustered,
+                }
+            )
+        finally:
+            progress_bar.close()
+    except ValueError as exc:
+        _emit_error(str(exc), logger)
+        close_logger()
+        return 1
+    except Exception as exc:
+        logger.exception("执行聚类失败")
+        _emit_error(f"执行聚类失败：{type(exc).__name__}: {exc}", logger)
+        close_logger()
+        return 1
+
+    run_stage("写出结果", logger=logger)
+    analysis_report = build_cluster_analysis_report(cluster_summary, stats)
+    write_dataframe(clustered, output_path)
+    write_dataframe(cluster_summary, cluster_summary_path)
+    write_dataframe(projection, projection_path)
+    write_dataframe(analysis_report, analysis_path)
+    html_report_path.write_text(
+        render_cluster_report_html(
+            analysis_report=analysis_report,
+            projection=projection,
+            stats=stats,
+        ),
+        encoding="utf-8",
+    )
+    _write_meta(
+        output_path=output_path,
+        action="cluster",
+        input_path=input_path,
+        parameters={
+            "target_column": target_column,
+            "embedding_model_path": embedding_model_path,
+            "batch_size": batch_size,
+            "cluster_mode": cluster_mode,
+            "min_cluster_size": min_cluster_size,
+            "num_clusters": num_clusters,
+            "cluster_selection_epsilon": cluster_selection_epsilon,
+        },
+        clustering_stats=stats,
+        cluster_summary_path=cluster_summary_path,
+        projection_path=projection_path,
+        analysis_path=analysis_path,
+        html_report_path=html_report_path,
+    )
+    _print_clustering_stats(
+        stats,
+        output_path,
+        cluster_summary_path,
+        projection_path,
+        analysis_path,
+        html_report_path,
+        logger,
+    )
+    close_logger()
+    return 0
+
+
 def _run_clean_csv_stream(
     input_path: Path,
     output_path: Path,
@@ -725,8 +885,30 @@ def _resolve_deduplicate_output_path(input_path: Path, output_arg: str | None) -
     return input_path.with_name(f"{input_path.stem}_deduplicated{input_path.suffix}")
 
 
+def _resolve_cluster_output_path(input_path: Path, output_arg: str | None) -> Path:
+    if output_arg:
+        return Path(output_arg)
+    return input_path.with_name(f"{input_path.stem}_clustered{input_path.suffix}")
+
+
 def _resolve_match_output_path(output_path: Path) -> Path:
     return output_path.with_name(f"{output_path.stem}_matches.csv")
+
+
+def _resolve_cluster_summary_output_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.stem}_clusters.csv")
+
+
+def _resolve_projection_output_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.stem}_projection.csv")
+
+
+def _resolve_cluster_analysis_output_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.stem}_analysis.csv")
+
+
+def _resolve_cluster_report_html_output_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.stem}_report.html")
 
 
 def _resolve_meta_output_path(output_path: Path) -> Path:
@@ -735,6 +917,8 @@ def _resolve_meta_output_path(output_path: Path) -> Path:
 
 def _resolve_log_path(output_path: Path) -> Path:
     return output_path.parent / "data-process.log"
+
+
 def _print_stats(stats: CleaningStats, output_path: Path, logger: Logger) -> None:
     _emit_message(f"清洗完成，输出文件：{output_path}", logger)
     _emit_message(f"清洗前总行数：{stats.total_before}", logger)
@@ -767,6 +951,32 @@ def _print_deduplication_stats(
     _emit_message(f"去重后总行数：{stats.total_after}", logger)
 
 
+def _print_clustering_stats(
+    stats: ClusteringStats,
+    output_path: Path,
+    cluster_summary_path: Path,
+    projection_path: Path,
+    analysis_path: Path,
+    html_report_path: Path,
+    logger: Logger,
+) -> None:
+    _emit_message(f"聚类完成，输出文件：{output_path}", logger)
+    _emit_message(f"聚类模式：{stats.cluster_mode}", logger)
+    _emit_message(f"使用目标列：{stats.target_column}", logger)
+    _emit_message(f"语义模型路径：{stats.embedding_model_path}", logger)
+    _emit_message(f"聚类前总行数：{stats.total_before}", logger)
+    _emit_message(f"成功入簇行数：{stats.total_clustered}", logger)
+    _emit_message(f"噪声点行数：{stats.noise_rows}", logger)
+    _emit_message(f"聚类簇数量：{stats.cluster_count}", logger)
+    _emit_message(f"最大簇大小：{stats.largest_cluster_size}", logger)
+    _emit_message(f"最小簇大小：{stats.smallest_cluster_size}", logger)
+    _emit_message(f"平均簇大小：{stats.average_cluster_size:.2f}", logger)
+    _emit_message(f"聚类汇总文件：{cluster_summary_path}", logger)
+    _emit_message(f"聚类投影文件：{projection_path}", logger)
+    _emit_message(f"聚类分析报表：{analysis_path}", logger)
+    _emit_message(f"聚类可视化报告：{html_report_path}", logger)
+
+
 def _emit_message(message: str, logger: Logger) -> None:
     print(message)
     logger.info(message)
@@ -784,7 +994,12 @@ def _write_meta(
     parameters: dict[str, object],
     cleaning_stats: CleaningStats | None = None,
     deduplication_stats: DeduplicationStats | None = None,
+    clustering_stats: ClusteringStats | None = None,
     match_output_path: Path | None = None,
+    cluster_summary_path: Path | None = None,
+    projection_path: Path | None = None,
+    analysis_path: Path | None = None,
+    html_report_path: Path | None = None,
 ) -> None:
     meta = {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -815,8 +1030,29 @@ def _write_meta(
             "unique_values": deduplication_stats.unique_values,
             "total_after": deduplication_stats.total_after,
         }
+    if clustering_stats is not None:
+        meta["clustering_stats"] = {
+            "target_column": clustering_stats.target_column,
+            "cluster_mode": clustering_stats.cluster_mode,
+            "embedding_model_path": clustering_stats.embedding_model_path,
+            "total_before": clustering_stats.total_before,
+            "total_clustered": clustering_stats.total_clustered,
+            "noise_rows": clustering_stats.noise_rows,
+            "cluster_count": clustering_stats.cluster_count,
+            "largest_cluster_size": clustering_stats.largest_cluster_size,
+            "smallest_cluster_size": clustering_stats.smallest_cluster_size,
+            "average_cluster_size": clustering_stats.average_cluster_size,
+        }
     if match_output_path is not None and match_output_path.exists():
         meta["match_file"] = str(match_output_path)
+    if cluster_summary_path is not None and cluster_summary_path.exists():
+        meta["cluster_summary_file"] = str(cluster_summary_path)
+    if projection_path is not None and projection_path.exists():
+        meta["projection_file"] = str(projection_path)
+    if analysis_path is not None and analysis_path.exists():
+        meta["analysis_file"] = str(analysis_path)
+    if html_report_path is not None and html_report_path.exists():
+        meta["html_report_file"] = str(html_report_path)
 
     _resolve_meta_output_path(output_path).write_text(
         json.dumps(meta, ensure_ascii=False, indent=2),
