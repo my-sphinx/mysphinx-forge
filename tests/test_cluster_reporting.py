@@ -61,6 +61,7 @@ def test_render_cluster_report_html_embeds_summary_and_points() -> None:
             "is_noise": [False, False],
             "x": [0.1, 0.2],
             "y": [0.3, 0.4],
+            "z": [0.5, 0.6],
         }
     )
     stats = ClusteringStats(

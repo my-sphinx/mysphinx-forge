@@ -8,6 +8,12 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from mysphinx_forge.cluster_labeling import (
+    DEFAULT_CLUSTER_LABEL_MODEL,
+    ClusterLabelContext,
+    OpenAICompatibleClusterLabelGenerator,
+    RuleBasedClusterLabelGenerator,
+)
 from mysphinx_forge.cleaning import resolve_target_column
 from mysphinx_forge.embedding import load_embedding_model
 
@@ -58,6 +64,8 @@ class ClusteringStats:
     target_column: str = ""
     cluster_mode: str = "hdbscan"
     embedding_model_path: str | None = None
+    cluster_label_mode: str = "rule"
+    cluster_label_model: str | None = None
 
 
 class TextClusterer:
@@ -69,9 +77,14 @@ class TextClusterer:
         min_cluster_size: int = 5,
         num_clusters: int = 8,
         cluster_selection_epsilon: float = 0.0,
+        cluster_label_mode: str = "rule",
+        cluster_label_model: str | None = None,
+        cluster_label_api_base: str | None = None,
+        cluster_label_sample_size: int = 8,
         random_state: int = DEFAULT_CLUSTER_RANDOM_STATE,
         model: object | None = None,
         estimator: object | None = None,
+        cluster_label_generator: object | None = None,
     ) -> None:
         self.model_path = Path(model_path)
         self.cluster_mode = cluster_mode
@@ -79,9 +92,14 @@ class TextClusterer:
         self.min_cluster_size = min_cluster_size
         self.num_clusters = num_clusters
         self.cluster_selection_epsilon = cluster_selection_epsilon
+        self.cluster_label_mode = cluster_label_mode
+        self.cluster_label_model = cluster_label_model or DEFAULT_CLUSTER_LABEL_MODEL
+        self.cluster_label_api_base = cluster_label_api_base
+        self.cluster_label_sample_size = cluster_label_sample_size
         self.random_state = random_state
         self._model = model
         self._estimator = estimator
+        self._cluster_label_generator = cluster_label_generator
 
     def cluster_dataframe(
         self,
@@ -106,6 +124,7 @@ class TextClusterer:
             progress_callback(0)
 
         cluster_sizes = _build_cluster_sizes(labels)
+        cluster_member_texts = _build_cluster_member_texts(labels=labels, texts=texts, cluster_sizes=cluster_sizes)
         representative_texts = _build_representative_texts(
             labels=labels,
             texts=texts,
@@ -113,8 +132,15 @@ class TextClusterer:
             vectors=vectors,
             cluster_sizes=cluster_sizes,
         )
-        cluster_keywords = _build_cluster_keywords(labels=labels, texts=texts, cluster_sizes=cluster_sizes)
-        cluster_labels = _build_cluster_labels(representative_texts, cluster_keywords)
+        cluster_keywords = _build_cluster_keywords(cluster_member_texts)
+        cluster_labels = _build_cluster_labels(
+            representative_texts=representative_texts,
+            cluster_keywords=cluster_keywords,
+            cluster_member_texts=cluster_member_texts,
+            cluster_sizes=cluster_sizes,
+            label_generator=self._ensure_cluster_label_generator(),
+            sample_size=self.cluster_label_sample_size,
+        )
 
         clustered = dataframe.copy()
         clustered["cluster_id"] = labels.tolist()
@@ -156,6 +182,8 @@ class TextClusterer:
             target_column=resolved_target_column,
             cluster_mode=self.cluster_mode,
             embedding_model_path=str(self.model_path),
+            cluster_label_mode=self.cluster_label_mode,
+            cluster_label_model=self.cluster_label_model if self.cluster_label_mode == "llm" else None,
         )
         return clustered, summary, projection, stats
 
@@ -220,6 +248,20 @@ class TextClusterer:
             return self._estimator
         raise ValueError(f"不支持的聚类模式：{self.cluster_mode}")
 
+    def _ensure_cluster_label_generator(self):
+        if self._cluster_label_generator is not None:
+            return self._cluster_label_generator
+        if self.cluster_label_mode == "rule":
+            self._cluster_label_generator = RuleBasedClusterLabelGenerator()
+            return self._cluster_label_generator
+        if self.cluster_label_mode == "llm":
+            self._cluster_label_generator = OpenAICompatibleClusterLabelGenerator(
+                model=self.cluster_label_model,
+                api_base_url=self.cluster_label_api_base,
+            )
+            return self._cluster_label_generator
+        raise ValueError(f"不支持的聚类标签模式：{self.cluster_label_mode}")
+
 
 def _cell_to_text(value: object) -> str:
     if pd.isna(value):
@@ -234,6 +276,19 @@ def _build_cluster_sizes(labels: np.ndarray) -> dict[int, int]:
             continue
         cluster_sizes[label] = cluster_sizes.get(label, 0) + 1
     return cluster_sizes
+
+
+def _build_cluster_member_texts(
+    labels: np.ndarray,
+    texts: list[str],
+    cluster_sizes: dict[int, int],
+) -> dict[int, list[str]]:
+    cluster_member_texts: dict[int, list[str]] = {label: [] for label in cluster_sizes}
+    for text, label in zip(texts, labels, strict=True):
+        if label == -1:
+            continue
+        cluster_member_texts[label].append(text)
+    return cluster_member_texts
 
 
 def _build_representative_texts(
@@ -305,6 +360,8 @@ def _build_clustering_stats(
     target_column: str,
     cluster_mode: str,
     embedding_model_path: str,
+    cluster_label_mode: str,
+    cluster_label_model: str | None,
 ) -> ClusteringStats:
     cluster_values = list(cluster_sizes.values())
     return ClusteringStats(
@@ -318,6 +375,8 @@ def _build_clustering_stats(
         target_column=target_column,
         cluster_mode=cluster_mode,
         embedding_model_path=embedding_model_path,
+        cluster_label_mode=cluster_label_mode,
+        cluster_label_model=cluster_label_model,
     )
 
 
@@ -331,12 +390,14 @@ def _build_projection_frame(
 ) -> pd.DataFrame:
     x_values = np.full(len(dataframe), np.nan, dtype=np.float32)
     y_values = np.full(len(dataframe), np.nan, dtype=np.float32)
+    z_values = np.full(len(dataframe), np.nan, dtype=np.float32)
 
     if active_indices and vectors.size > 0:
         coordinates = _project_vectors(vectors)
         for dataframe_index, coordinate in zip(active_indices, coordinates, strict=True):
             x_values[dataframe_index] = float(coordinate[0])
             y_values[dataframe_index] = float(coordinate[1])
+            z_values[dataframe_index] = float(coordinate[2])
 
     return pd.DataFrame(
         {
@@ -346,18 +407,17 @@ def _build_projection_frame(
             "is_noise": [label == -1 for label in labels],
             "x": x_values.tolist(),
             "y": y_values.tolist(),
+            "z": z_values.tolist(),
         }
     )
 
 
 def _build_cluster_keywords(
-    labels: np.ndarray,
-    texts: list[str],
-    cluster_sizes: dict[int, int],
+    cluster_member_texts: dict[int, list[str]],
 ) -> dict[int, str]:
     cluster_keywords: dict[int, str] = {}
-    for label in sorted(cluster_sizes):
-        member_texts = [text for text, current_label in zip(texts, labels, strict=True) if current_label == label]
+    for label in sorted(cluster_member_texts):
+        member_texts = cluster_member_texts[label]
         keywords = _extract_keywords(member_texts)
         cluster_keywords[label] = ", ".join(keywords)
     return cluster_keywords
@@ -366,16 +426,48 @@ def _build_cluster_keywords(
 def _build_cluster_labels(
     representative_texts: dict[int, str],
     cluster_keywords: dict[int, str],
+    cluster_member_texts: dict[int, list[str]],
+    cluster_sizes: dict[int, int],
+    label_generator: object,
+    sample_size: int,
 ) -> dict[int, str]:
     labels: dict[int, str] = {}
     for cluster_id, representative_text in representative_texts.items():
-        keywords = cluster_keywords.get(cluster_id, "")
-        first_keyword = keywords.split(", ")[0] if keywords else ""
-        if first_keyword and first_keyword not in representative_text:
-            labels[cluster_id] = f"{first_keyword} | {representative_text}"
-        else:
-            labels[cluster_id] = representative_text or first_keyword
+        keywords = [item for item in cluster_keywords.get(cluster_id, "").split(", ") if item]
+        context = ClusterLabelContext(
+            cluster_id=cluster_id,
+            cluster_size=cluster_sizes[cluster_id],
+            representative_text=representative_text,
+            top_keywords=keywords,
+            sample_texts=_build_cluster_label_samples(
+                representative_text=representative_text,
+                member_texts=cluster_member_texts.get(cluster_id, []),
+                sample_size=sample_size,
+            ),
+        )
+        generated_label = str(label_generator.generate_label(context)).strip()
+        if generated_label:
+            labels[cluster_id] = generated_label
+            continue
+        labels[cluster_id] = RuleBasedClusterLabelGenerator().generate_label(context)
     return labels
+
+
+def _build_cluster_label_samples(
+    representative_text: str,
+    member_texts: list[str],
+    sample_size: int,
+) -> list[str]:
+    samples: list[str] = []
+    if representative_text:
+        samples.append(representative_text)
+    for text in member_texts:
+        if not text or text in samples:
+            continue
+        samples.append(text)
+        if len(samples) >= sample_size:
+            break
+    return samples[:sample_size]
 
 
 def _extract_keywords(texts: list[str], top_k: int = 5) -> list[str]:
@@ -421,15 +513,31 @@ def _is_cjk_token(token: str) -> bool:
 
 def _project_vectors(vectors: np.ndarray) -> np.ndarray:
     if len(vectors) == 0:
-        return np.empty((0, 2), dtype=np.float32)
+        return np.empty((0, 3), dtype=np.float32)
     if len(vectors) == 1:
-        return np.array([[0.0, 0.0]], dtype=np.float32)
+        return np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
     if vectors.shape[1] == 1:
-        return np.column_stack((vectors[:, 0], np.zeros(len(vectors), dtype=np.float32))).astype(np.float32)
+        return np.column_stack(
+            (
+                vectors[:, 0],
+                np.zeros(len(vectors), dtype=np.float32),
+                np.zeros(len(vectors), dtype=np.float32),
+            )
+        ).astype(np.float32)
+    if vectors.shape[1] == 2:
+        return np.column_stack((vectors, np.zeros(len(vectors), dtype=np.float32))).astype(np.float32)
 
     try:
         from sklearn.decomposition import PCA
     except ImportError as exc:
         raise ValueError("未安装 scikit-learn，请先执行 uv sync。") from exc
 
-    return np.asarray(PCA(n_components=2, random_state=DEFAULT_CLUSTER_RANDOM_STATE).fit_transform(vectors), dtype=np.float32)
+    component_count = min(3, len(vectors), vectors.shape[1])
+    coordinates = np.asarray(
+        PCA(n_components=component_count, random_state=DEFAULT_CLUSTER_RANDOM_STATE).fit_transform(vectors),
+        dtype=np.float32,
+    )
+    if component_count == 3:
+        return coordinates
+    padding = np.zeros((len(vectors), 3 - component_count), dtype=np.float32)
+    return np.hstack((coordinates, padding)).astype(np.float32)

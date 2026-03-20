@@ -14,6 +14,7 @@ from mysphinx_forge.cleaning import (
     CleaningStats,
     clean_dataframe,
 )
+from mysphinx_forge.cluster_labeling import DEFAULT_CLUSTER_LABEL_MODEL
 from mysphinx_forge.clustering import ClusteringStats, TextClusterer
 from mysphinx_forge.cluster_reporting import (
     build_cluster_analysis_report,
@@ -130,6 +131,28 @@ def main() -> int:
         default=0.0,
         help="HDBSCAN 的 cluster_selection_epsilon，默认 0。",
     )
+    parser.add_argument(
+        "--cluster-label-mode",
+        choices=["rule", "llm"],
+        default="rule",
+        help="聚类标签模式。rule 为规则拼接，llm 为基于簇样本生成摘要标签。",
+    )
+    parser.add_argument(
+        "--cluster-label-model",
+        default=DEFAULT_CLUSTER_LABEL_MODEL,
+        help=f"LLM 聚类标签使用的模型名，默认 {DEFAULT_CLUSTER_LABEL_MODEL}。",
+    )
+    parser.add_argument(
+        "--cluster-label-api-base",
+        default="",
+        help="LLM 聚类标签接口基地址。未指定时优先读取 OPENAI_BASE_URL，否则使用官方默认地址。",
+    )
+    parser.add_argument(
+        "--cluster-label-sample-size",
+        type=int,
+        default=8,
+        help="生成聚类标签时每个簇送给 LLM 的示例问题数量，默认 8。",
+    )
 
     args = parser.parse_args()
     if not args.input_file:
@@ -152,6 +175,9 @@ def main() -> int:
         return 1
     if args.cluster_selection_epsilon < 0:
         print("--cluster-selection-epsilon 不能小于 0。")
+        return 1
+    if args.cluster_label_sample_size <= 0:
+        print("--cluster-label-sample-size 必须是大于 0 的整数。")
         return 1
     if not 0 < args.semantic_threshold <= 1:
         print("--semantic-threshold 必须在 0 到 1 之间。")
@@ -198,6 +224,10 @@ def main() -> int:
             args.min_cluster_size,
             args.num_clusters,
             args.cluster_selection_epsilon,
+            args.cluster_label_mode,
+            args.cluster_label_model,
+            args.cluster_label_api_base or None,
+            args.cluster_label_sample_size,
         )
 
     parser.print_help()
@@ -549,6 +579,10 @@ def _run_cluster(
     min_cluster_size: int,
     num_clusters: int,
     cluster_selection_epsilon: float,
+    cluster_label_mode: str,
+    cluster_label_model: str,
+    cluster_label_api_base: str | None,
+    cluster_label_sample_size: int,
 ) -> int:
     input_path = Path(input_file)
     output_path = _resolve_cluster_output_path(input_path, output_arg)
@@ -571,6 +605,10 @@ def _run_cluster(
         min_cluster_size=min_cluster_size,
         num_clusters=num_clusters,
         cluster_selection_epsilon=cluster_selection_epsilon,
+        cluster_label_mode=cluster_label_mode,
+        cluster_label_model=cluster_label_model,
+        cluster_label_api_base=cluster_label_api_base,
+        cluster_label_sample_size=cluster_label_sample_size,
     )
 
     try:
@@ -629,6 +667,10 @@ def _run_cluster(
             "min_cluster_size": min_cluster_size,
             "num_clusters": num_clusters,
             "cluster_selection_epsilon": cluster_selection_epsilon,
+            "cluster_label_mode": cluster_label_mode,
+            "cluster_label_model": cluster_label_model,
+            "cluster_label_api_base": cluster_label_api_base,
+            "cluster_label_sample_size": cluster_label_sample_size,
         },
         clustering_stats=stats,
         cluster_summary_path=cluster_summary_path,
@@ -962,6 +1004,9 @@ def _print_clustering_stats(
 ) -> None:
     _emit_message(f"聚类完成，输出文件：{output_path}", logger)
     _emit_message(f"聚类模式：{stats.cluster_mode}", logger)
+    _emit_message(f"标签模式：{stats.cluster_label_mode}", logger)
+    if stats.cluster_label_model:
+        _emit_message(f"标签模型：{stats.cluster_label_model}", logger)
     _emit_message(f"使用目标列：{stats.target_column}", logger)
     _emit_message(f"语义模型路径：{stats.embedding_model_path}", logger)
     _emit_message(f"聚类前总行数：{stats.total_before}", logger)
@@ -1035,6 +1080,8 @@ def _write_meta(
             "target_column": clustering_stats.target_column,
             "cluster_mode": clustering_stats.cluster_mode,
             "embedding_model_path": clustering_stats.embedding_model_path,
+            "cluster_label_mode": clustering_stats.cluster_label_mode,
+            "cluster_label_model": clustering_stats.cluster_label_model,
             "total_before": clustering_stats.total_before,
             "total_clustered": clustering_stats.total_clustered,
             "noise_rows": clustering_stats.noise_rows,

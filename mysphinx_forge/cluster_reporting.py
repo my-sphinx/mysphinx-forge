@@ -184,11 +184,14 @@ def render_cluster_report_html(
     #chart {{
       width: 100%;
       height: 480px;
+      display: block;
       border-radius: 18px;
       background:
         linear-gradient(180deg, rgba(255,255,255,0.86), rgba(247,242,235,0.96));
       border: 1px solid rgba(31, 41, 55, 0.08);
+      cursor: grab;
     }}
+    #chart.dragging {{ cursor: grabbing; }}
     .legend {{
       margin-top: 12px;
       display: flex;
@@ -294,13 +297,14 @@ def render_cluster_report_html(
             <input id="noiseOnly" type="checkbox">
             Noise only
           </label>
+          <button id="resetView" type="button">Reset View</button>
           <button id="resetSelection" type="button">Reset</button>
         </div>
-        <svg id="chart" viewBox="0 0 720 480" preserveAspectRatio="none"></svg>
+        <canvas id="chart" width="720" height="480"></canvas>
         <div class="legend">
-          <span>点颜色按簇区分</span>
-          <span>噪声点使用橙色高亮</span>
-          <span>空白或不可投影样本会被忽略</span>
+          <span>点颜色按簇区分，噪声点使用橙色高亮</span>
+          <span>拖拽可旋转，滚轮可缩放</span>
+          <span>当前使用 3D PCA 投影，空白或不可投影样本会被忽略</span>
         </div>
         <div class="detail" id="detailPanel">
           <h3>Point Detail</h3>
@@ -330,18 +334,30 @@ def render_cluster_report_html(
   </main>
   <script>
     const payload = {payload_json};
-    const svg = document.getElementById("chart");
+    const canvas = document.getElementById("chart");
+    const context = canvas.getContext("2d");
     const clusterFilter = document.getElementById("clusterFilter");
     const noiseOnly = document.getElementById("noiseOnly");
+    const resetView = document.getElementById("resetView");
     const resetSelection = document.getElementById("resetSelection");
     const detailPanel = document.getElementById("detailPanel");
-    const width = 720;
-    const height = 480;
-    const padding = 36;
+    const width = canvas.width;
+    const height = canvas.height;
     const palette = ["#1d4ed8", "#0f766e", "#7c3aed", "#be123c", "#0369a1", "#4d7c0f", "#c2410c", "#334155"];
-    const projectedPoints = payload.points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    const projectedPoints = payload.points.filter(
+      (point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)
+    );
     const clusterOptions = [...new Set(projectedPoints.filter((point) => !point.is_noise).map((point) => point.cluster_id))].sort((a, b) => a - b);
+    const defaultView = {{ rotationX: -0.58, rotationY: 0.72, zoom: 1 }};
+    const view = {{ ...defaultView }};
+    const pointRadius = 5.2;
+    const cameraDistance = 3.2;
+    const projectionStrength = 0.9;
     let selectedPoint = null;
+    let renderedPoints = [];
+    let isDragging = false;
+    let lastPointer = null;
+    let dragDistance = 0;
 
     clusterOptions.forEach((clusterId) => {{
       const option = document.createElement("option");
@@ -364,7 +380,7 @@ def render_cluster_report_html(
         <p><strong>Text:</strong> ${{text || "(empty)"}}</p>
         <p><strong>Cluster:</strong> ${{point.cluster_id}}</p>
         <p><strong>Noise:</strong> ${{point.is_noise ? "Yes" : "No"}}</p>
-        <p><strong>Coordinates:</strong> (${{Number(point.x).toFixed(3)}}, ${{Number(point.y).toFixed(3)}})</p>
+        <p><strong>Coordinates:</strong> (${{Number(point.x).toFixed(3)}}, ${{Number(point.y).toFixed(3)}}, ${{Number(point.z).toFixed(3)}})</p>
       `;
     }}
 
@@ -377,45 +393,113 @@ def render_cluster_report_html(
       }});
     }}
 
+    function normalizePoints(points) {{
+      const center = {{
+        x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+        y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+        z: points.reduce((sum, point) => sum + point.z, 0) / points.length,
+      }};
+      const maxExtent = Math.max(
+        ...points.map((point) => Math.max(
+          Math.abs(point.x - center.x),
+          Math.abs(point.y - center.y),
+          Math.abs(point.z - center.z),
+        )),
+        1e-6,
+      );
+      return points.map((point) => ({{
+        point,
+        x: (point.x - center.x) / maxExtent,
+        y: (point.y - center.y) / maxExtent,
+        z: (point.z - center.z) / maxExtent,
+      }}));
+    }}
+
+    function rotatePoint(point) {{
+      const cosY = Math.cos(view.rotationY);
+      const sinY = Math.sin(view.rotationY);
+      const cosX = Math.cos(view.rotationX);
+      const sinX = Math.sin(view.rotationX);
+      const x1 = point.x * cosY + point.z * sinY;
+      const z1 = -point.x * sinY + point.z * cosY;
+      const y2 = point.y * cosX - z1 * sinX;
+      const z2 = point.y * sinX + z1 * cosX;
+      return {{ x: x1, y: y2, z: z2 }};
+    }}
+
+    function projectToCanvas(point) {{
+      const perspective = (projectionStrength * view.zoom) / Math.max(cameraDistance - point.z, 0.4);
+      return {{
+        x: width / 2 + point.x * perspective * width * 0.42,
+        y: height / 2 - point.y * perspective * height * 0.42,
+        scale: perspective,
+        depth: point.z,
+      }};
+    }}
+
+    function drawAxes() {{
+      const axisLength = 1.25;
+      const axes = [
+        {{ label: "X", color: "rgba(29, 78, 216, 0.55)", from: {{ x: -axisLength, y: 0, z: 0 }}, to: {{ x: axisLength, y: 0, z: 0 }} }},
+        {{ label: "Y", color: "rgba(15, 118, 110, 0.55)", from: {{ x: 0, y: -axisLength, z: 0 }}, to: {{ x: 0, y: axisLength, z: 0 }} }},
+        {{ label: "Z", color: "rgba(234, 88, 12, 0.55)", from: {{ x: 0, y: 0, z: -axisLength }}, to: {{ x: 0, y: 0, z: axisLength }} }},
+      ];
+      axes.forEach((axis) => {{
+        const from = projectToCanvas(rotatePoint(axis.from));
+        const to = projectToCanvas(rotatePoint(axis.to));
+        context.strokeStyle = axis.color;
+        context.lineWidth = 1.2;
+        context.beginPath();
+        context.moveTo(from.x, from.y);
+        context.lineTo(to.x, to.y);
+        context.stroke();
+        context.fillStyle = axis.color;
+        context.font = "12px sans-serif";
+        context.fillText(axis.label, to.x + 6, to.y - 6);
+      }});
+    }}
+
     function renderChart() {{
       const points = filteredPoints();
+      renderedPoints = [];
+      context.clearRect(0, 0, width, height);
       if (!points.length) {{
-        svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#6b7280" font-size="18">No points match the current filter</text>';
+        context.fillStyle = "#6b7280";
+        context.font = "18px serif";
+        context.textAlign = "center";
+        context.fillText("No points match the current filter", width / 2, height / 2);
         updateDetail(null);
         return;
       }}
 
-      const xs = points.map((point) => point.x);
-      const ys = points.map((point) => point.y);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-      const scaleX = (value) => padding + ((value - minX) / Math.max(maxX - minX, 1e-9)) * (width - padding * 2);
-      const scaleY = (value) => height - padding - ((value - minY) / Math.max(maxY - minY, 1e-9)) * (height - padding * 2);
-      const circles = points.map((point, index) => {{
+      drawAxes();
+      renderedPoints = normalizePoints(points).map((entry) => {{
+        const rotated = rotatePoint(entry);
+        const projected = projectToCanvas(rotated);
+        return {{
+          point: entry.point,
+          screenX: projected.x,
+          screenY: projected.y,
+          depth: projected.depth,
+          radius: Math.max(2.6, pointRadius * (0.72 + projected.scale * 1.15)),
+        }};
+      }}).sort((a, b) => a.depth - b.depth);
+
+      renderedPoints.forEach((entry) => {{
+        const point = entry.point;
         const color = point.is_noise ? "#ea580c" : palette[Math.abs(point.cluster_id) % palette.length];
-        const label = String(point[payload.stats.target_column] ?? "");
         const isSelected = selectedPoint && selectedPoint.row_index === point.row_index;
-        const radius = isSelected ? 8 : 5.2;
-        const stroke = isSelected ? "#111827" : "rgba(255,255,255,0.85)";
-        return `<circle data-index="${{index}}" cx="${{scaleX(point.x)}}" cy="${{scaleY(point.y)}}" r="${{radius}}" fill="${{color}}" stroke="${{stroke}}" stroke-width="1.4" fill-opacity="0.82">
-          <title>${{label}} | cluster=${{point.cluster_id}}</title>
-        </circle>`;
-      }}).join("");
-      svg.innerHTML = `
-        <rect x="0" y="0" width="${{width}}" height="${{height}}" fill="transparent"></rect>
-        <line x1="${{padding}}" y1="${{height-padding}}" x2="${{width-padding}}" y2="${{height-padding}}" stroke="rgba(31,41,55,0.18)"></line>
-        <line x1="${{padding}}" y1="${{padding}}" x2="${{padding}}" y2="${{height-padding}}" stroke="rgba(31,41,55,0.18)"></line>
-        ${{circles}}
-      `;
-      [...svg.querySelectorAll("circle")].forEach((circle) => {{
-        circle.addEventListener("click", () => {{
-          selectedPoint = points[Number(circle.dataset.index)];
-          updateDetail(selectedPoint);
-          renderChart();
-        }});
+        context.beginPath();
+        context.arc(entry.screenX, entry.screenY, isSelected ? entry.radius + 2.2 : entry.radius, 0, Math.PI * 2);
+        context.fillStyle = color;
+        context.globalAlpha = point.is_noise ? 0.9 : 0.82;
+        context.fill();
+        context.globalAlpha = 1;
+        context.lineWidth = isSelected ? 2.1 : 1.3;
+        context.strokeStyle = isSelected ? "#111827" : "rgba(255,255,255,0.9)";
+        context.stroke();
       }});
+
       if (selectedPoint) {{
         const stillVisible = points.some((point) => point.row_index === selectedPoint.row_index);
         if (!stillVisible) {{
@@ -425,12 +509,86 @@ def render_cluster_report_html(
       }}
     }}
 
+    function pickPoint(event) {{
+      const bounds = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / bounds.width;
+      const scaleY = canvas.height / bounds.height;
+      const pointerX = (event.clientX - bounds.left) * scaleX;
+      const pointerY = (event.clientY - bounds.top) * scaleY;
+      let candidate = null;
+      renderedPoints.forEach((entry) => {{
+        const dx = entry.screenX - pointerX;
+        const dy = entry.screenY - pointerY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance <= entry.radius + 4) {{
+          if (!candidate || distance < candidate.distance || entry.depth > candidate.depth) {{
+            candidate = {{ entry, distance }};
+          }}
+        }}
+      }});
+      return candidate ? candidate.entry.point : null;
+    }}
+
+    canvas.addEventListener("pointerdown", (event) => {{
+      isDragging = true;
+      lastPointer = {{ x: event.clientX, y: event.clientY }};
+      dragDistance = 0;
+      canvas.classList.add("dragging");
+      canvas.setPointerCapture(event.pointerId);
+    }});
+
+    canvas.addEventListener("pointermove", (event) => {{
+      if (!isDragging || !lastPointer) return;
+      const deltaX = event.clientX - lastPointer.x;
+      const deltaY = event.clientY - lastPointer.y;
+      dragDistance += Math.abs(deltaX) + Math.abs(deltaY);
+      lastPointer = {{ x: event.clientX, y: event.clientY }};
+      view.rotationY += deltaX * 0.01;
+      view.rotationX += deltaY * 0.01;
+      renderChart();
+    }});
+
+    canvas.addEventListener("pointerup", (event) => {{
+      isDragging = false;
+      lastPointer = null;
+      canvas.classList.remove("dragging");
+      if (dragDistance <= 4) {{
+        selectedPoint = pickPoint(event);
+        updateDetail(selectedPoint);
+        renderChart();
+      }}
+      dragDistance = 0;
+    }});
+
+    canvas.addEventListener("pointerleave", () => {{
+      isDragging = false;
+      lastPointer = null;
+      dragDistance = 0;
+      canvas.classList.remove("dragging");
+    }});
+
+    canvas.addEventListener("wheel", (event) => {{
+      event.preventDefault();
+      const delta = event.deltaY < 0 ? 1.08 : 0.92;
+      view.zoom = Math.min(3.2, Math.max(0.45, view.zoom * delta));
+      renderChart();
+    }}, {{ passive: false }});
+
     clusterFilter.addEventListener("change", renderChart);
     noiseOnly.addEventListener("change", renderChart);
+    resetView.addEventListener("click", () => {{
+      view.rotationX = defaultView.rotationX;
+      view.rotationY = defaultView.rotationY;
+      view.zoom = defaultView.zoom;
+      renderChart();
+    }});
     resetSelection.addEventListener("click", () => {{
       clusterFilter.value = "all";
       noiseOnly.checked = false;
       selectedPoint = null;
+      view.rotationX = defaultView.rotationX;
+      view.rotationY = defaultView.rotationY;
+      view.zoom = defaultView.zoom;
       updateDetail(null);
       renderChart();
     }});

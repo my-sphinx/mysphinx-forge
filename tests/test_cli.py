@@ -546,6 +546,10 @@ def test_main_supports_cluster_action(tmp_path, monkeypatch, capsys) -> None:
             min_cluster_size: int,
             num_clusters: int,
             cluster_selection_epsilon: float,
+            cluster_label_mode: str,
+            cluster_label_model: str,
+            cluster_label_api_base: str | None,
+            cluster_label_sample_size: int,
         ) -> None:
             self.model_path = model_path
             self.cluster_mode = cluster_mode
@@ -553,6 +557,10 @@ def test_main_supports_cluster_action(tmp_path, monkeypatch, capsys) -> None:
             self.min_cluster_size = min_cluster_size
             self.num_clusters = num_clusters
             self.cluster_selection_epsilon = cluster_selection_epsilon
+            self.cluster_label_mode = cluster_label_mode
+            self.cluster_label_model = cluster_label_model
+            self.cluster_label_api_base = cluster_label_api_base
+            self.cluster_label_sample_size = cluster_label_sample_size
 
         def cluster_dataframe(self, dataframe, target_column="text", progress_callback=None):
             if progress_callback:
@@ -585,6 +593,7 @@ def test_main_supports_cluster_action(tmp_path, monkeypatch, capsys) -> None:
                     "is_noise": [False, False, False, True],
                     "x": [0.1, 0.2, 0.9, float("nan")],
                     "y": [0.3, 0.4, 0.8, float("nan")],
+                    "z": [0.5, 0.6, 0.7, float("nan")],
                 }
             )
             stats = ClusteringStats(
@@ -598,6 +607,8 @@ def test_main_supports_cluster_action(tmp_path, monkeypatch, capsys) -> None:
                 target_column=target_column,
                 cluster_mode=self.cluster_mode,
                 embedding_model_path=self.model_path,
+                cluster_label_mode=self.cluster_label_mode,
+                cluster_label_model=self.cluster_label_model,
             )
             return clustered, summary, projection, stats
 
@@ -630,6 +641,7 @@ def test_main_supports_cluster_action(tmp_path, monkeypatch, capsys) -> None:
     assert exit_code == 0
     assert "聚类完成" in captured.out
     assert "聚类模式：hdbscan" in captured.out
+    assert "标签模式：rule" in captured.out
     assert "聚类簇数量：2" in captured.out
     assert "执行聚类" in captured.err
     assert output_file.exists()
@@ -649,10 +661,34 @@ def test_main_supports_cluster_action(tmp_path, monkeypatch, capsys) -> None:
     meta = json.loads(meta_file.read_text(encoding="utf-8"))
     assert meta["action"] == "cluster"
     assert meta["clustering_stats"]["cluster_mode"] == "hdbscan"
+    assert meta["clustering_stats"]["cluster_label_mode"] == "rule"
+    assert meta["parameters"]["cluster_label_mode"] == "rule"
     assert meta["cluster_summary_file"] == str(cluster_summary_file)
     assert meta["projection_file"] == str(projection_file)
     assert meta["analysis_file"] == str(analysis_file)
     assert meta["html_report_file"] == str(html_report_file)
+
+
+def test_main_rejects_invalid_cluster_label_sample_size(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "cluster",
+            "--input-file",
+            "input.csv",
+            "--cluster-label-sample-size",
+            "0",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "--cluster-label-sample-size 必须是大于 0 的整数。" in captured.out
 
 
 def test_main_supports_custom_category_column_for_semantic_deduplicate(

@@ -28,6 +28,15 @@ class FakeEstimator:
         return self.labels
 
 
+class FakeClusterLabelGenerator:
+    def generate_label(self, context) -> str:
+        if context.cluster_id == 0:
+            return "售后退款流程"
+        if context.cluster_id == 1:
+            return "发票开具"
+        return ""
+
+
 def test_text_clusterer_builds_cluster_columns_and_summary() -> None:
     dataframe = pd.DataFrame(
         {
@@ -82,6 +91,7 @@ def test_text_clusterer_builds_cluster_columns_and_summary() -> None:
     assert projection["text"].tolist() == ["退款怎么申请", "怎么申请退款", "我要开发票", ""]
     assert projection["x"].notna().tolist() == [True, True, True, False]
     assert projection["y"].notna().tolist() == [True, True, True, False]
+    assert projection["z"].notna().tolist() == [True, True, True, False]
     assert stats.total_before == 4
     assert stats.total_clustered == 3
     assert stats.noise_rows == 1
@@ -103,3 +113,37 @@ def test_text_clusterer_validates_kmeans_cluster_count() -> None:
         assert "KMeans 聚类需要至少 3 条非空文本" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_text_clusterer_supports_custom_cluster_label_generator() -> None:
+    dataframe = pd.DataFrame(
+        {
+            "text": ["退款怎么申请", "怎么申请退款", "我要开发票", ""],
+        }
+    )
+    clusterer = TextClusterer(
+        model_path="models/m3e-base",
+        cluster_mode="hdbscan",
+        cluster_label_mode="llm",
+        cluster_label_generator=FakeClusterLabelGenerator(),
+        model=FakeModel(
+            {
+                "退款怎么申请": [1.0, 0.0],
+                "怎么申请退款": [0.99, 0.01],
+                "我要开发票": [0.0, 1.0],
+            }
+        ),
+        estimator=FakeEstimator([0, 0, 1]),
+    )
+
+    clustered, summary, _, stats = clusterer.cluster_dataframe(dataframe)
+
+    assert clustered["cluster_label"].tolist() == [
+        "售后退款流程",
+        "售后退款流程",
+        "发票开具",
+        "",
+    ]
+    assert summary["cluster_label"].tolist() == ["售后退款流程", "发票开具"]
+    assert stats.cluster_label_mode == "llm"
+    assert stats.cluster_label_model == "gpt-4.1-mini"

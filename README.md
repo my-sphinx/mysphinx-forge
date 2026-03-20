@@ -119,6 +119,12 @@ uv run python main.py --action cluster --input-file <输入文件路径> --clust
 uv run python main.py --action cluster --input-file <输入文件路径> --cluster-mode hdbscan --min-cluster-size 8
 ```
 
+使用 LLM 生成聚类摘要标签：
+
+```bash
+OPENAI_API_KEY=<你的密钥> uv run python main.py --action cluster --input-file <输入文件路径> --cluster-label-mode llm
+```
+
 ## 命令行参数
 
 | 参数 | 是否必填 | 说明 | 支持的值 |
@@ -139,6 +145,10 @@ uv run python main.py --action cluster --input-file <输入文件路径> --clust
 | `--min-cluster-size` | 否 | 指定 `HDBSCAN` 的最小簇大小。仅对 `--cluster-mode hdbscan` 生效。 | 大于 `0` 的整数，默认 `5` |
 | `--num-clusters` | 否 | 指定 `KMeans` 聚类簇数。仅对 `--cluster-mode kmeans` 生效。 | 大于 `0` 的整数，默认 `8` |
 | `--cluster-selection-epsilon` | 否 | 指定 `HDBSCAN` 的 `cluster_selection_epsilon`。值越大，簇边界越宽松。 | 大于等于 `0` 的小数，默认 `0` |
+| `--cluster-label-mode` | 否 | 指定聚类标签生成模式。`rule` 为“关键词 + 代表文本”的规则标签，`llm` 为基于簇样本生成的摘要标签。 | `rule`、`llm`，默认 `rule` |
+| `--cluster-label-model` | 否 | 指定 LLM 聚类标签使用的模型名。仅对 `--cluster-label-mode llm` 生效。 | 任意兼容模型名，默认 `gpt-4.1-mini` |
+| `--cluster-label-api-base` | 否 | 指定 LLM 聚类标签接口基地址。未指定时优先读取 `OPENAI_BASE_URL`，否则默认 `https://api.openai.com/v1`。 | 任意兼容 OpenAI Chat Completions 的基地址 |
+| `--cluster-label-sample-size` | 否 | 指定每个簇送给 LLM 生成摘要标签的示例问题数量。 | 大于 `0` 的整数，默认 `8` |
 
 ## 参数示例
 
@@ -159,6 +169,7 @@ uv run python main.py --action cluster --input-file <输入文件路径> --clust
 | 使用默认参数执行聚类 | `uv run python main.py --action cluster --input-file data.csv` |
 | 使用 `KMeans` 固定簇数聚类 | `uv run python main.py --action cluster --input-file data.csv --cluster-mode kmeans --num-clusters 12` |
 | 调整 `HDBSCAN` 最小簇大小 | `uv run python main.py --action cluster --input-file data.csv --cluster-mode hdbscan --min-cluster-size 8` |
+| 使用 LLM 生成聚类摘要标签 | `OPENAI_API_KEY=... uv run python main.py --action cluster --input-file data.csv --cluster-label-mode llm` |
 
 ## 输出统计字段说明
 
