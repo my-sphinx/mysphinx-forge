@@ -8,6 +8,7 @@ from typing import Callable
 import pandas as pd
 
 from data_process.file_io import load_dataframe
+
 DEFAULT_TARGET_COLUMNS = ("text", "用户问题", "客户问题", "用户输入")
 MOJIBAKE_CHARS = set("ÃÂÐÑØÞßæøåçðþŒœ€™¢£¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿")
 REPLACEMENT_CHARS = {"�", "\ufffd"}
@@ -38,6 +39,8 @@ class CleaningStats:
         self.removed_symbol_rows += other.removed_symbol_rows
         self.removed_emoji_rows += other.removed_emoji_rows
         self.removed_garbled_rows += other.removed_garbled_rows
+
+
 def clean_dataframe(
     dataframe: pd.DataFrame,
     target_column: str = "text",
@@ -52,21 +55,12 @@ def clean_dataframe(
 
     for value in dataframe[resolved_target_column].tolist():
         processed_since_report += 1
-        row_text = _cell_to_text(value)
-        if _is_blank_text(row_text):
-            stats.removed_blank_rows += 1
-            keep_mask.append(False)
-        elif _is_emoji_only_text(row_text):
-            stats.removed_emoji_rows += 1
-            keep_mask.append(False)
-        elif _is_garbled_only_text(row_text):
-            stats.removed_garbled_rows += 1
-            keep_mask.append(False)
-        elif _is_symbol_only_text(row_text):
-            stats.removed_symbol_rows += 1
-            keep_mask.append(False)
-        else:
+        removal_reason = _classify_removal_reason(_cell_to_text(value))
+        if removal_reason is None:
             keep_mask.append(True)
+        else:
+            _increment_removed_count(stats, removal_reason)
+            keep_mask.append(False)
 
         if progress_callback and processed_since_report >= report_every:
             progress_callback(processed_since_report)
@@ -96,6 +90,31 @@ def _cell_to_text(value: object) -> str:
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+def _classify_removal_reason(text: str) -> str | None:
+    if _is_blank_text(text):
+        return "blank"
+    if _is_emoji_only_text(text):
+        return "emoji"
+    if _is_garbled_only_text(text):
+        return "garbled"
+    if _is_symbol_only_text(text):
+        return "symbol"
+    return None
+
+
+def _increment_removed_count(stats: CleaningStats, removal_reason: str) -> None:
+    if removal_reason == "blank":
+        stats.removed_blank_rows += 1
+        return
+    if removal_reason == "emoji":
+        stats.removed_emoji_rows += 1
+        return
+    if removal_reason == "garbled":
+        stats.removed_garbled_rows += 1
+        return
+    stats.removed_symbol_rows += 1
 
 
 def _is_blank_text(text: str) -> bool:

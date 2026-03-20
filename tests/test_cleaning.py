@@ -43,6 +43,16 @@ def test_clean_dataframe_reports_progress() -> None:
     assert reported == [2, 1]
 
 
+def test_clean_dataframe_prioritizes_emoji_before_symbol_classification() -> None:
+    dataframe = pd.DataFrame({"text": ["😂🤣"]})
+
+    cleaned, stats = clean_dataframe(dataframe)
+
+    assert cleaned.empty
+    assert stats.removed_emoji_rows == 1
+    assert stats.removed_symbol_rows == 0
+
+
 def test_clean_dataframe_uses_target_column_only() -> None:
     dataframe = pd.DataFrame(
         {
