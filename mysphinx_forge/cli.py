@@ -30,6 +30,12 @@ from mysphinx_forge.file_io import (
     write_match_rows,
 )
 from mysphinx_forge.logging_utils import close_logger, configure_logger
+from mysphinx_forge.model_testing import (
+    BatchModelTestStats,
+    ModelTestRuntimeConfig,
+    model_test_dataframe,
+    run_model_test,
+)
 from mysphinx_forge.progress import ProgressBar, run_stage
 from mysphinx_forge.semantic_deduplication import (
     DEFAULT_EMBEDDING_MODEL_PATH,
@@ -43,8 +49,8 @@ def main() -> int:
     parser.add_argument(
         "--action",
         required=True,
-        choices=["clean", "deduplicate", "clean-deduplicate", "cluster"],
-        help="要执行的功能。当前支持 clean、deduplicate、clean-deduplicate、cluster。",
+        choices=["clean", "deduplicate", "clean-deduplicate", "cluster", "model-test"],
+        help="要执行的功能。当前支持 clean、deduplicate、clean-deduplicate、cluster、model-test。",
     )
     parser.add_argument(
         "--input-file",
@@ -88,6 +94,18 @@ def main() -> int:
         "--embedding-model-path",
         default=str(DEFAULT_EMBEDDING_MODEL_PATH),
         help="语义去重使用的本地 embedding 模型路径，默认 models/m3e-base。",
+    )
+    parser.add_argument(
+        "--train-model-path",
+        default="",
+        help="模型训练使用的本地模型路径。仅对后续训练相关 action 生效。",
+    )
+    parser.add_argument(
+        "--test-model-path",
+        "--model-path",
+        dest="test_model_path",
+        default="",
+        help="模型测试使用的本地模型路径。--model-path 为其别名，仅对 --action model-test 生效。",
     )
     parser.add_argument(
         "--batch-size",
@@ -153,10 +171,73 @@ def main() -> int:
         default=8,
         help="生成聚类标签时每个簇送给 LLM 的示例问题数量，默认 8。",
     )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=64,
+        help="模型测试时最大生成 token 数，默认 64。",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="模型测试采样温度，默认 1.0。",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=1.0,
+        help="模型测试 nucleus sampling 的 top_p，默认 1.0。",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=0,
+        help="模型测试采样时的 top_k，默认 0。",
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.05,
+        help="模型测试重复惩罚系数，默认 1.05。",
+    )
+    parser.add_argument(
+        "--do-sample",
+        dest="do_sample",
+        action="store_true",
+        default=False,
+        help="模型测试时启用采样生成，默认关闭。",
+    )
+    parser.add_argument(
+        "--no-do-sample",
+        dest="do_sample",
+        action="store_false",
+        help="模型测试时关闭采样，改为确定性生成。默认即为关闭。",
+    )
+    parser.add_argument(
+        "--model-test-batch-size",
+        type=int,
+        default=8,
+        help="批量模型测试时单个 worker 的推理批大小，默认 8。",
+    )
+    parser.add_argument(
+        "--model-test-num-workers",
+        default="auto",
+        help="批量模型测试时的 worker 数。默认 auto，会按可见 GPU 数自动决定；无 GPU 时退化为 1。",
+    )
 
     args = parser.parse_args()
-    if not args.input_file:
+    if args.action != "model-test" and not args.input_file:
         print("未检测到支持的输入文件，请提供 csv 或 Excel 文件（.csv/.xls/.xlsx/.xlsm）。")
+        return 1
+    if args.action == "model-test" and not args.test_model_path:
+        print("--test-model-path 为必填参数，--model-path 可作为别名，且仅用于 model-test。")
+        return 1
+    if args.model_test_batch_size <= 0:
+        print("--model-test-batch-size 必须是大于 0 的整数。")
+        return 1
+    if args.max_new_tokens <= 0:
+        print("--max-new-tokens 必须是大于 0 的整数。")
         return 1
     if args.chunk_size <= 0:
         print("--chunk-size 必须是大于 0 的整数。")
@@ -179,6 +260,28 @@ def main() -> int:
     if args.cluster_label_sample_size <= 0:
         print("--cluster-label-sample-size 必须是大于 0 的整数。")
         return 1
+    if args.temperature <= 0:
+        print("--temperature 必须是大于 0 的数值。")
+        return 1
+    if not 0 < args.top_p <= 1:
+        print("--top-p 必须在 0 到 1 之间。")
+        return 1
+    if args.top_k < 0:
+        print("--top-k 不能小于 0。")
+        return 1
+    if args.repetition_penalty <= 0:
+        print("--repetition-penalty 必须是大于 0 的数值。")
+        return 1
+    if args.model_test_num_workers != "auto":
+        try:
+            parsed_worker_count = int(args.model_test_num_workers)
+        except ValueError:
+            print("--model-test-num-workers 必须是 auto 或大于 0 的整数。")
+            return 1
+        if parsed_worker_count <= 0:
+            print("--model-test-num-workers 必须是 auto 或大于 0 的整数。")
+            return 1
+        args.model_test_num_workers = parsed_worker_count
     if not 0 < args.semantic_threshold <= 1:
         print("--semantic-threshold 必须在 0 到 1 之间。")
         return 1
@@ -228,6 +331,21 @@ def main() -> int:
             args.cluster_label_model,
             args.cluster_label_api_base or None,
             args.cluster_label_sample_size,
+        )
+    if args.action == "model-test":
+        return _run_model_test(
+            model_path=args.test_model_path,
+            input_file=args.input_file,
+            output_arg=args.output,
+            target_column=args.target_column,
+            max_new_tokens=args.max_new_tokens,
+            do_sample=args.do_sample,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            repetition_penalty=args.repetition_penalty,
+            model_test_batch_size=args.model_test_batch_size,
+            model_test_num_workers=args.model_test_num_workers,
         )
 
     parser.print_help()
@@ -691,6 +809,158 @@ def _run_cluster(
     return 0
 
 
+def _run_model_test(
+    model_path: str,
+    input_file: str | None,
+    output_arg: str | None,
+    target_column: str,
+    max_new_tokens: int,
+    do_sample: bool,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    repetition_penalty: float,
+    model_test_batch_size: int,
+    model_test_num_workers: int | str,
+) -> int:
+    if input_file:
+        return _run_model_test_on_file(
+            input_file=input_file,
+            output_arg=output_arg,
+            target_column=target_column,
+            model_path=model_path,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            model_test_batch_size=model_test_batch_size,
+            model_test_num_workers=model_test_num_workers,
+        )
+
+    log_path = Path.cwd() / "mysphinx-forge.log"
+    logger = configure_logger(log_path)
+    logger.info("开始执行 action=model-test model=%s", model_path)
+
+    try:
+        result = run_model_test(
+            model_path=model_path,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+        )
+    except ValueError as exc:
+        _emit_error(str(exc), logger)
+        close_logger()
+        return 1
+    except Exception as exc:
+        logger.exception("执行模型测试失败")
+        _emit_error(f"执行模型测试失败：{type(exc).__name__}: {exc}", logger)
+        close_logger()
+        return 1
+
+    _emit_message("模型测试完成", logger)
+    _emit_message(f"模型路径：{result.model_path}", logger)
+    _emit_message(f"测试输入：{result.user_input}", logger)
+    _emit_message(f"模型类型：{result.model_class}", logger)
+    _emit_message(f"Tokenizer 类型：{result.tokenizer_class}", logger)
+    _emit_message(f"推理设备：{result.device}", logger)
+    _emit_message(
+        "生成参数："
+        f"max_new_tokens={max_new_tokens}, "
+        f"do_sample={do_sample}, "
+        f"temperature={temperature}, "
+        f"top_p={top_p}, "
+        f"top_k={top_k}, "
+        f"repetition_penalty={repetition_penalty}",
+        logger,
+    )
+    _emit_message(f"模型输出：{result.generated_text}", logger)
+    close_logger()
+    return 0
+
+
+def _run_model_test_on_file(
+    input_file: str,
+    output_arg: str | None,
+    target_column: str,
+    model_path: str,
+    max_new_tokens: int,
+    do_sample: bool,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    repetition_penalty: float,
+    model_test_batch_size: int,
+    model_test_num_workers: int | str,
+) -> int:
+    input_path = Path(input_file)
+    output_path = _resolve_model_test_output_path(input_path, output_arg)
+    logger = configure_logger(_resolve_log_path(output_path))
+    logger.info("开始执行 action=model-test input=%s output=%s model=%s", input_path, output_path, model_path)
+
+    try:
+        run_stage("读取文件", logger=logger)
+        dataframe = load_dataframe(input_file)
+        progress_bar = ProgressBar(total=len(dataframe), description="执行模型测试", logger=logger)
+        try:
+            tested, stats = model_test_dataframe(
+                dataframe=dataframe,
+                model_path=model_path,
+                runtime_config=ModelTestRuntimeConfig(
+                    max_new_tokens=max_new_tokens,
+                    do_sample=do_sample,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    batch_size=model_test_batch_size,
+                    num_workers=model_test_num_workers,
+                ),
+                target_column=target_column,
+                progress_callback=progress_bar.advance,
+            )
+            progress_bar.set_postfix(
+                {
+                    "总数": stats.total_rows,
+                    "命中预期": stats.matched_expected_count if stats.has_expected_result else "-",
+                }
+            )
+        finally:
+            progress_bar.close()
+    except ValueError as exc:
+        _emit_error(str(exc), logger)
+        close_logger()
+        return 1
+    except Exception as exc:
+        logger.exception("执行模型文件测试失败")
+        _emit_error(f"执行模型文件测试失败：{type(exc).__name__}: {exc}", logger)
+        close_logger()
+        return 1
+
+    run_stage("写出结果", logger=logger)
+    write_dataframe(tested, output_path)
+    _print_batch_model_test_stats(
+        stats=stats,
+        output_path=output_path,
+        max_new_tokens=max_new_tokens,
+        do_sample=do_sample,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        repetition_penalty=repetition_penalty,
+        model_test_batch_size=model_test_batch_size,
+        model_test_num_workers=model_test_num_workers,
+        logger=logger,
+    )
+    close_logger()
+    return 0
+
+
 def _run_clean_csv_stream(
     input_path: Path,
     output_path: Path,
@@ -933,6 +1203,12 @@ def _resolve_cluster_output_path(input_path: Path, output_arg: str | None) -> Pa
     return input_path.with_name(f"{input_path.stem}_clustered{input_path.suffix}")
 
 
+def _resolve_model_test_output_path(input_path: Path, output_arg: str | None) -> Path:
+    if output_arg:
+        return Path(output_arg)
+    return input_path.with_name(f"{input_path.stem}_model_tested{input_path.suffix}")
+
+
 def _resolve_match_output_path(output_path: Path) -> Path:
     return output_path.with_name(f"{output_path.stem}_matches.csv")
 
@@ -1020,6 +1296,47 @@ def _print_clustering_stats(
     _emit_message(f"聚类投影文件：{projection_path}", logger)
     _emit_message(f"聚类分析报表：{analysis_path}", logger)
     _emit_message(f"聚类可视化报告：{html_report_path}", logger)
+
+
+def _print_batch_model_test_stats(
+    stats: BatchModelTestStats,
+    output_path: Path,
+    max_new_tokens: int,
+    do_sample: bool,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    repetition_penalty: float,
+    model_test_batch_size: int,
+    model_test_num_workers: int | str,
+    logger: Logger,
+) -> None:
+    _emit_message(f"模型测试完成，输出文件：{output_path}", logger)
+    _emit_message(f"测试模型路径：{stats.model_path}", logger)
+    _emit_message(f"使用目标列：{stats.target_column}", logger)
+    _emit_message(f"推理设备：{stats.device}", logger)
+    _emit_message(f"实际 worker 数：{stats.num_workers}", logger)
+    _emit_message(f"批量推理大小：{stats.batch_size}", logger)
+    _emit_message(
+        "生成参数："
+        f"max_new_tokens={max_new_tokens}, "
+        f"do_sample={do_sample}, "
+        f"temperature={temperature}, "
+        f"top_p={top_p}, "
+        f"top_k={top_k}, "
+        f"repetition_penalty={repetition_penalty}, "
+        f"worker_setting={model_test_num_workers}, "
+        f"batch_setting={model_test_batch_size}",
+        logger,
+    )
+    _emit_message(f"测试总行数：{stats.total_rows}", logger)
+    _emit_message(f"模型结果列：{stats.model_result_column}", logger)
+    _emit_message(f"模型调用时间列：{stats.model_call_time_column}", logger)
+    _emit_message(f"平均模型调用时间（秒）：{stats.average_call_time_seconds}", logger)
+    if stats.has_expected_result:
+        _emit_message(f"预期结果列：{stats.expected_result_column}", logger)
+        _emit_message(f"匹配结果列：{stats.match_expected_column}", logger)
+        _emit_message(f"匹配预期数量：{stats.matched_expected_count}", logger)
 
 
 def _emit_message(message: str, logger: Logger) -> None:

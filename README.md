@@ -125,12 +125,34 @@ uv run python main.py --action cluster --input-file <输入文件路径> --clust
 OPENAI_API_KEY=<你的密钥> uv run python main.py --action cluster --input-file <输入文件路径> --cluster-label-mode llm
 ```
 
+执行简单模型测试：
+
+```bash
+uv run python main.py --action model-test --test-model-path models/your-chat-model
+```
+
+基于清洗/去重后的文件批量执行模型测试：
+
+```bash
+uv run python main.py --action model-test --input-file data/input_deduplicated.csv --test-model-path models/your-chat-model
+```
+
+指定生成参数执行模型测试：
+
+```bash
+uv run python main.py --action model-test --test-model-path models/your-chat-model --max-new-tokens 128 --temperature 1.0 --top-p 1.0 --top-k 0 --repetition-penalty 1.05 --no-do-sample
+```
+
+当 `model-test` 提供 `--input-file` 时，程序会读取文件中的目标列作为用户输入，生成一个新的 `*_model_tested` 文件，并追加新列 `模型结果` 和 `模型调用时间`。如果原文件中存在 `预期结果` 列，则还会自动追加 `匹配预期` 列，按 `预期结果` 与 `模型结果` 的标准化文本是否一致输出 `True/False`。未提供 `--input-file` 时，仍会使用代码里的固定变量模拟单条“用户输入”，对应变量是 `mysphinx_forge/model_testing.py` 中的 `MODEL_TEST_USER_INPUT`。这里的测试模型与 embedding 模型是两条独立链路。推荐使用 `--test-model-path`，`--model-path` 仅作为别名保留。当前默认生成策略为稳定模式：`do_sample=False`、`temperature=1.0`、`top_p=1.0`、`top_k=0`、`repetition_penalty=1.05`。
+
+批量模型测试会优先按可见 GPU 数自动分配 worker，每个 worker 绑定单独 device，并在 worker 内按 batch 执行推理；没有 GPU 时会自动退化成单 worker。执行过程中会实时显示整体进度。
+
 ## 命令行参数
 
 | 参数 | 是否必填 | 说明 | 支持的值 |
 | --- | --- | --- | --- |
-| `--action` | 是 | 指定要执行的功能。当前工具通过该参数选择不同处理动作。 | `clean`、`deduplicate`、`clean-deduplicate`、`cluster` |
-| `--input-file` | 是 | 指定输入文件路径。程序会根据文件扩展名自动识别读取方式。 | 支持 `.csv`、`.xls`、`.xlsx`、`.xlsm` |
+| `--action` | 是 | 指定要执行的功能。当前工具通过该参数选择不同处理动作。 | `clean`、`deduplicate`、`clean-deduplicate`、`cluster`、`model-test` |
+| `--input-file` | 否 | 指定输入文件路径。`model-test` 可选传入该参数：传入时按文件批量测试，不传时执行单条模型测试；其它 action 会根据文件扩展名自动识别读取方式。 | 支持 `.csv`、`.xls`、`.xlsx`、`.xlsm` |
 | `-o`, `--output` | 否 | 指定输出文件路径。未提供时，`clean` 默认生成 `*_cleaned` 文件，`deduplicate` 默认生成 `*_deduplicated` 文件。 | 任意合法输出路径，例如 `result.csv`、`result.xlsx` |
 | `--chunk-size` | 否 | 指定 `csv` 分块流式处理时每块读取的行数。仅对 `csv` 生效，`Excel` 会忽略该参数。 | 大于 `0` 的整数，默认 `50000` |
 | `--target-column` | 否 | 指定执行清洗或去重判断的目标列名。程序只根据这一列内容决定是否删除整行，其它列会随该行一并保留或删除。未显式传入时，会按候选列顺序自动探测。 | 任意存在于输入文件中的列名；默认按 `text -> 用户问题 -> 客户问题 -> 用户输入` 自动探测 |
@@ -138,7 +160,19 @@ OPENAI_API_KEY=<你的密钥> uv run python main.py --action cluster --input-fil
 | `--category-column` | 否 | 指定语义去重时用于导出分类相关字段的来源列名。比如传 `label` 时，`*_matches.csv` 会导出 `label` / `matched_label` / `same_label`。输入文件没有该列时，不会导出这三列。 | 任意列名，默认 `category` |
 | `--semantic-threshold` | 否 | 指定语义去重阈值。仅对 `--dedupe-mode semantic` 生效。阈值越高，判重越保守。 | `0` 到 `1` 之间的小数，默认 `0.9` |
 | `--embedding-model-path` | 否 | 指定语义去重使用的本地 embedding 模型目录。仅对 `--dedupe-mode semantic` 生效。 | 合法本地模型目录路径，默认 `models/m3e-base` |
+| `--train-model-path` | 否 | 指定模型训练使用的本地模型路径。当前版本先预留该参数，后续训练功能接入时使用。 | 合法本地模型目录路径 |
 | `--batch-size` | 否 | 指定语义去重时 embedding 编码批大小。仅对 `--dedupe-mode semantic` 生效。 | 大于 `0` 的整数，默认 `64` |
+| `--test-model-path` | 否 | 指定模型测试使用的本地模型目录。仅对 `--action model-test` 生效。 | 合法本地模型目录路径 |
+| `--model-path` | 否 | `--test-model-path` 的别名，便于兼容和简写。 | 合法本地模型目录路径 |
+| `--max-new-tokens` | 否 | 模型测试时最大生成 token 数。 | 大于 `0` 的整数，默认 `64` |
+| `--do-sample` | 否 | 模型测试时启用采样生成。 | 默认关闭 |
+| `--no-do-sample` | 否 | 模型测试时关闭采样，改为确定性生成。 | 默认即关闭 |
+| `--temperature` | 否 | 模型测试采样温度。 | 大于 `0` 的数值，默认 `1.0` |
+| `--top-p` | 否 | 模型测试 nucleus sampling 的 top_p。 | `0` 到 `1` 之间的小数，默认 `1.0` |
+| `--top-k` | 否 | 模型测试采样时的 top_k。 | 大于等于 `0` 的整数，默认 `0` |
+| `--repetition-penalty` | 否 | 模型测试重复惩罚系数。 | 大于 `0` 的数值，默认 `1.05` |
+| `--model-test-batch-size` | 否 | 批量模型测试时单个 worker 的推理批大小。 | 大于 `0` 的整数，默认 `8` |
+| `--model-test-num-workers` | 否 | 批量模型测试 worker 数。 | `auto` 或大于 `0` 的整数，默认 `auto` |
 | `--semantic-index-type` | 否 | 指定语义去重使用的向量索引类型。`flat` 为精确检索，`hnsw` 为近似检索。 | `flat`、`hnsw`，默认 `flat` |
 | `--semantic-hnsw-m` | 否 | 指定 `hnsw` 索引的图连接度参数 `M`。仅对 `--semantic-index-type hnsw` 生效。 | 大于 `0` 的整数，默认 `32` |
 | `--cluster-mode` | 否 | 指定聚类模式。`hdbscan` 为密度聚类，`kmeans` 为固定簇数聚类。仅对 `cluster` 生效。 | `hdbscan`、`kmeans`，默认 `hdbscan` |
@@ -170,6 +204,10 @@ OPENAI_API_KEY=<你的密钥> uv run python main.py --action cluster --input-fil
 | 使用 `KMeans` 固定簇数聚类 | `uv run python main.py --action cluster --input-file data.csv --cluster-mode kmeans --num-clusters 12` |
 | 调整 `HDBSCAN` 最小簇大小 | `uv run python main.py --action cluster --input-file data.csv --cluster-mode hdbscan --min-cluster-size 8` |
 | 使用 LLM 生成聚类摘要标签 | `OPENAI_API_KEY=... uv run python main.py --action cluster --input-file data.csv --cluster-label-mode llm` |
+| 执行简单模型测试 | `uv run python main.py --action model-test --test-model-path models/your-chat-model` |
+| 基于去重结果文件批量执行模型测试 | `uv run python main.py --action model-test --input-file data/input_deduplicated.csv --test-model-path models/your-chat-model` |
+| 指定 worker 数和 batch 大小执行批量模型测试 | `uv run python main.py --action model-test --input-file data/input_deduplicated.csv --test-model-path models/your-chat-model --model-test-num-workers auto --model-test-batch-size 8` |
+| 自定义生成参数执行模型测试 | `uv run python main.py --action model-test --test-model-path models/your-chat-model --max-new-tokens 128 --temperature 1.0 --top-p 1.0 --top-k 0 --repetition-penalty 1.05 --no-do-sample` |
 
 ## 输出统计字段说明
 

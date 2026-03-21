@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -9,6 +10,7 @@ from mysphinx_forge import cli
 from mysphinx_forge.cli import main
 from mysphinx_forge.clustering import ClusteringStats
 from mysphinx_forge.deduplication import DeduplicationStats
+from mysphinx_forge.model_testing import BatchModelTestStats
 from mysphinx_forge.semantic_deduplication import SemanticDeduplicationMatch
 
 
@@ -1219,3 +1221,334 @@ def test_main_reports_unexpected_clean_deduplicate_error(tmp_path, monkeypatch, 
     assert exit_code == 1
     assert "执行清洗去重失败：RuntimeError: model backend crashed" in captured.out
     assert "执行清洗去重失败" in log_text
+
+
+def test_main_supports_model_test_action(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    calls = {}
+
+    def fake_run_model_test(**kwargs):
+        calls.update(kwargs)
+        return SimpleNamespace(
+            model_path=kwargs["model_path"],
+            user_input="请问退款怎么申请？",
+            model_class="AutoModelForCausalLM",
+            tokenizer_class="AutoTokenizer",
+            device="cuda",
+            generated_text="您可以在订单详情页提交退款申请。",
+        )
+
+    monkeypatch.setattr(cli, "run_model_test", fake_run_model_test)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "model-test",
+            "--test-model-path",
+            "models/custom-model",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert calls["model_path"] == "models/custom-model"
+    assert calls["max_new_tokens"] == 64
+    assert calls["do_sample"] is False
+    assert calls["temperature"] == 1.0
+    assert calls["top_p"] == 1.0
+    assert calls["top_k"] == 0
+    assert calls["repetition_penalty"] == 1.05
+    assert "模型测试完成" in captured.out
+    assert "模型路径：models/custom-model" in captured.out
+    assert "测试输入：请问退款怎么申请？" in captured.out
+    assert "模型类型：AutoModelForCausalLM" in captured.out
+    assert "Tokenizer 类型：AutoTokenizer" in captured.out
+    assert "推理设备：cuda" in captured.out
+    assert "生成参数：max_new_tokens=64, do_sample=False, temperature=1.0, top_p=1.0, top_k=0, repetition_penalty=1.05" in captured.out
+    assert "模型输出：您可以在订单详情页提交退款申请。" in captured.out
+    log_text = (tmp_path / "mysphinx-forge.log").read_text(encoding="utf-8")
+    assert "开始执行 action=model-test model=models/custom-model" in log_text
+
+
+def test_main_rejects_missing_model_path_for_model_test(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--action", "model-test"],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "--test-model-path 为必填参数，--model-path 可作为别名，且仅用于 model-test。" in captured.out
+
+
+def test_main_supports_model_path_alias_for_model_test(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    calls = {}
+
+    def fake_run_model_test(**kwargs):
+        calls.update(kwargs)
+        return SimpleNamespace(
+            model_path=kwargs["model_path"],
+            user_input="请问退款怎么申请？",
+            model_class="AutoModelForCausalLM",
+            tokenizer_class="AutoTokenizer",
+            device="cuda",
+            generated_text="您可以在订单详情页提交退款申请。",
+        )
+
+    monkeypatch.setattr(cli, "run_model_test", fake_run_model_test)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "model-test",
+            "--model-path",
+            "models/alias-model",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert calls["model_path"] == "models/alias-model"
+    assert calls["max_new_tokens"] == 64
+    assert "模型路径：models/alias-model" in captured.out
+
+
+def test_main_passes_custom_generation_parameters_for_model_test(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    calls = {}
+
+    def fake_run_model_test(**kwargs):
+        calls.update(kwargs)
+        return SimpleNamespace(
+            model_path=kwargs["model_path"],
+            user_input="请问退款怎么申请？",
+            model_class="AutoModelForCausalLM",
+            tokenizer_class="AutoTokenizer",
+            device="cuda",
+            generated_text="您可以在订单详情页提交退款申请。",
+        )
+
+    monkeypatch.setattr(cli, "run_model_test", fake_run_model_test)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "model-test",
+            "--test-model-path",
+            "models/custom-model",
+            "--max-new-tokens",
+            "128",
+            "--temperature",
+            "0.8",
+            "--top-p",
+            "0.95",
+            "--top-k",
+            "40",
+            "--repetition-penalty",
+            "1.1",
+            "--no-do-sample",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert calls["model_path"] == "models/custom-model"
+    assert calls["max_new_tokens"] == 128
+    assert calls["do_sample"] is False
+    assert calls["temperature"] == 0.8
+    assert calls["top_p"] == 0.95
+    assert calls["top_k"] == 40
+    assert calls["repetition_penalty"] == 1.1
+    assert "生成参数：max_new_tokens=128, do_sample=False, temperature=0.8, top_p=0.95, top_k=40, repetition_penalty=1.1" in captured.out
+
+
+def test_main_rejects_invalid_generation_parameters_for_model_test(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "model-test",
+            "--test-model-path",
+            "models/custom-model",
+            "--top-p",
+            "1.2",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "--top-p 必须在 0 到 1 之间。" in captured.out
+
+
+def test_main_reports_model_test_error(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def boom(**_kwargs):
+        raise RuntimeError("model backend crashed")
+
+    monkeypatch.setattr(cli, "run_model_test", boom)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--action", "model-test", "--test-model-path", "models/custom-model"],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    log_text = (tmp_path / "mysphinx-forge.log").read_text(encoding="utf-8")
+
+    assert exit_code == 1
+    assert "执行模型测试失败：RuntimeError: model backend crashed" in captured.out
+    assert "执行模型测试失败" in log_text
+
+
+def test_main_supports_file_based_model_test_with_expected_result(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame(
+        {
+            "用户输入": ["退款怎么申请", "发票怎么开"],
+            "预期结果": ["请在订单页提交退款申请", "请联系财务开票"],
+        }
+    ).to_csv(input_file, index=False)
+
+    def fake_model_test_dataframe(
+        dataframe,
+        model_path,
+        *,
+        runtime_config,
+        target_column="text",
+        progress_callback=None,
+    ):
+        if progress_callback:
+            progress_callback(len(dataframe))
+        tested = dataframe.copy()
+        tested["模型结果"] = ["请在订单页提交退款申请", "请走人工工单"]
+        tested["模型调用时间"] = [0.12, 0.15]
+        tested["匹配预期"] = [True, False]
+        stats = BatchModelTestStats(
+            total_rows=2,
+            target_column="用户输入",
+            has_expected_result=True,
+            matched_expected_count=1,
+            average_call_time_seconds=0.135,
+            model_path=str(model_path),
+            device="cuda:0",
+            num_workers=1,
+            batch_size=runtime_config.batch_size,
+        )
+        return tested, stats
+
+    monkeypatch.setattr(cli, "model_test_dataframe", fake_model_test_dataframe)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "model-test",
+            "--input-file",
+            str(input_file),
+            "--test-model-path",
+            "models/custom-model",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    output_file = tmp_path / "input_model_tested.csv"
+
+    assert exit_code == 0
+    assert "模型测试完成，输出文件" in captured.out
+    assert "模型调用时间列：模型调用时间" in captured.out
+    assert "匹配预期数量：1" in captured.out
+    assert "实际 worker 数：1" in captured.out
+    tested = pd.read_csv(output_file)
+    assert tested["模型结果"].tolist() == ["请在订单页提交退款申请", "请走人工工单"]
+    assert "模型调用时间" in tested.columns
+    assert tested["匹配预期"].tolist() == [True, False]
+
+
+def test_main_supports_file_based_model_test_without_expected_result(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    input_file = tmp_path / "input.csv"
+    pd.DataFrame({"用户输入": ["退款怎么申请"]}).to_csv(input_file, index=False)
+
+    def fake_model_test_dataframe(
+        dataframe,
+        model_path,
+        *,
+        runtime_config,
+        target_column="text",
+        progress_callback=None,
+    ):
+        if progress_callback:
+            progress_callback(len(dataframe))
+        tested = dataframe.copy()
+        tested["模型结果"] = ["回答:退款怎么申请"]
+        tested["模型调用时间"] = [0.11]
+        stats = BatchModelTestStats(
+            total_rows=1,
+            target_column="用户输入",
+            has_expected_result=False,
+            matched_expected_count=0,
+            average_call_time_seconds=0.11,
+            model_path=str(model_path),
+            device="cuda:0",
+            num_workers=1,
+            batch_size=runtime_config.batch_size,
+        )
+        return tested, stats
+
+    monkeypatch.setattr(cli, "model_test_dataframe", fake_model_test_dataframe)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--action",
+            "model-test",
+            "--input-file",
+            str(input_file),
+            "--test-model-path",
+            "models/custom-model",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+    output_file = tmp_path / "input_model_tested.csv"
+
+    assert exit_code == 0
+    assert "模型结果列：模型结果" in captured.out
+    tested = pd.read_csv(output_file)
+    assert tested["模型结果"].tolist() == ["回答:退款怎么申请"]
+    assert "模型调用时间" in tested.columns
+    assert "匹配预期" not in tested.columns
