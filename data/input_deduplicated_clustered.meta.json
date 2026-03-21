@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-03-20T16:21:21.738723+00:00",
+  "action": "cluster",
+  "input_file": "data/input_deduplicated.xlsx",
+  "output_file": "data/input_deduplicated_clustered.xlsx",
+  "log_file": "data/mysphinx-forge.log",
+  "parameters": {
+    "target_column": "text",
+    "embedding_model_path": "models/m3e-base",
+    "batch_size": 64,
+    "cluster_mode": "kmeans",
+    "min_cluster_size": 5,
+    "num_clusters": 5,
+    "cluster_selection_epsilon": 0.0,
+    "cluster_label_mode": "rule",
+    "cluster_label_model": "gpt-4.1-mini",
+    "cluster_label_api_base": null,
+    "cluster_label_sample_size": 8
+  },
+  "clustering_stats": {
+    "target_column": "text",
+    "cluster_mode": "kmeans",
+    "embedding_model_path": "models/m3e-base",
+    "cluster_label_mode": "rule",
+    "cluster_label_model": null,
+    "total_before": 786,
+    "total_clustered": 786,
+    "noise_rows": 0,
+    "cluster_count": 5,
+    "largest_cluster_size": 198,
+    "smallest_cluster_size": 88,
+    "average_cluster_size": 157.2
+  },
+  "cluster_summary_file": "data/input_deduplicated_clustered_clusters.csv",
+  "projection_file": "data/input_deduplicated_clustered_projection.csv",
+  "analysis_file": "data/input_deduplicated_clustered_analysis.csv",
+  "html_report_file": "data/input_deduplicated_clustered_report.html"
+}
