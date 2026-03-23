@@ -2,6 +2,61 @@
 
 `MySphinx Forge` 是一个逐步演进的数据与模型工作流工具仓库。当前已实现 `数据清洗`、`数据去重`、`语义聚类`，以及显式流水线 `先清洗再去重`。
 
+## 安装与打包
+
+本项目已经配置为标准 Python 包，可以直接构建并发布到 PyPI。
+
+本地安装：
+
+```bash
+uv sync
+uv pip install -e .
+```
+
+构建分发包：
+
+```bash
+uv build
+```
+
+构建完成后会生成：
+
+- `dist/*.tar.gz`
+- `dist/*.whl`
+
+建议先清理旧产物，再重新构建：
+
+```bash
+rm -rf build dist *.egg-info
+uv build
+```
+
+建议先上传到 TestPyPI 验证：
+
+```bash
+uvx twine check dist/*
+uvx twine upload --repository testpypi dist/*
+```
+
+然后用 TestPyPI 安装验证：
+
+```bash
+uv pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ mysphinx-forge
+mysphinx-forge --help
+```
+
+确认没问题后再上传到正式 PyPI：
+
+```bash
+uvx twine upload dist/*
+```
+
+安装后可以直接使用命令行入口：
+
+```bash
+mysphinx-forge --help
+```
+
 执行清洗、去重或聚类时，终端会通过 `tqdm` 实时显示多阶段进度条；任务完成后会继续输出最终统计信息。`csv` 默认展示 `统计总行数 -> 分块处理 -> 写出结果`，`Excel` 展示 `读取文件 -> 执行处理 -> 写出结果`。清洗阶段完成时，进度条尾部会附带 `总数 / 删除 / 保留` 摘要，以及 `空行 / 符号 / 表情 / 乱码` 的删除分布；去重阶段会展示 `总数 / 重复 / 保留 / 唯一值` 摘要；聚类阶段会展示 `总数 / 簇数 / 噪声 / 入簇` 摘要。每次运行还会在输出文件同目录生成统一日志文件 `mysphinx-forge.log`，写入阶段日志、错误信息和最终统计；同时会为每个结果文件生成对应的 `*.meta.json` 元数据文件。
 
 ## 模块划分
